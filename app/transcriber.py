@@ -24,7 +24,9 @@ def get_base_ydl_opts() -> dict:
     opts = {
         'quiet': True,
         'no_warnings': True,
-        # Emulate mobile clients (android, ios) to bypass datacenter/cloud IP bot blocking
+        # Concurrent downloads for high-speed fragment downloading
+        'concurrent_fragment_downloads': 4,
+        # Emulate mobile clients to bypass cloud IP bot checks and throttles
         'extractor_args': {
             'youtube': {
                 'player_client': ['android', 'ios', 'mweb', 'web']
@@ -159,13 +161,12 @@ def parse_custom_transcript(raw_text: str) -> List[TranscriptSegment]:
         parsed.append({'start': curr_time, 'text': ' '.join(curr_text)})
 
     if not parsed:
-        # Fallback: Treat as plain text without timestamps
         full_text = " ".join(lines)
         words = full_text.split()
         chunk_size = 10
         for i in range(0, len(words), chunk_size):
             chunk = " ".join(words[i:i+chunk_size])
-            start_t = (i / 150.0) * 60.0 # ~150 wpm estimate
+            start_t = (i / 150.0) * 60.0
             dur_t = (len(words[i:i+chunk_size]) / 150.0) * 60.0
             parsed.append({'start': start_t, 'duration': dur_t, 'text': chunk})
     else:
@@ -178,9 +179,7 @@ def parse_custom_transcript(raw_text: str) -> List[TranscriptSegment]:
     return generate_word_timestamps(parsed)
 
 def transcribe_audio_with_gemini(audio_path: str, api_key: str) -> List[TranscriptSegment]:
-    """
-    Fallback: Transcribe audio track with Gemini 2.0 Flash when YouTube blocks captions.
-    """
+    """Fallback: Transcribe audio track with Gemini 2.0 Flash when YouTube blocks captions."""
     try:
         logger.info(f"Using Gemini Flash to transcribe audio track: {audio_path}")
         with open(audio_path, "rb") as f:
@@ -223,14 +222,7 @@ def fetch_transcript(
     custom_transcript: Optional[str] = None,
     api_key: Optional[str] = None
 ) -> Tuple[List[TranscriptSegment], Optional[str]]:
-    """
-    Multi-channel transcript extractor:
-    1. Direct user-pasted transcript (bypasses all YouTube bot checks)
-    2. youtube_transcript_api (fastest)
-    3. yt-dlp auto-captions with mobile client emulation (bypasses datacenter blocks)
-    4. Audio download + Gemini Speech-to-Text fallback
-    """
-    # 1. Custom transcript if provided by user
+    """Multi-channel transcript extractor."""
     if custom_transcript and custom_transcript.strip():
         logger.info("Using user-provided custom transcript")
         segments = parse_custom_transcript(custom_transcript)
@@ -241,7 +233,7 @@ def fetch_transcript(
     logger.info(f"Attempting transcript retrieval for {video_id}")
     errors = []
     
-    # 2. Try youtube_transcript_api
+    # 1. Try youtube_transcript_api
     try:
         api = YouTubeTranscriptApi()
         transcript_list = api.list(video_id)
@@ -267,7 +259,7 @@ def fetch_transcript(
         logger.warning(f"youtube_transcript_api error: {err_msg}")
         errors.append(f"youtube-transcript-api: {err_msg[:120]}")
         
-    # 3. Fallback to yt-dlp subtitle extraction (with mobile client emulation)
+    # 2. Fallback to yt-dlp subtitle extraction
     try:
         sub_prefix = os.path.join(target_dir, f"{video_id}_sub")
         ydl_opts = get_base_ydl_opts()
@@ -283,7 +275,6 @@ def fetch_transcript(
             ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
             
         raw_segments = []
-        # Use glob to match any json3 or vtt downloaded (e.g. .en.json3, .en-orig.json3, etc.)
         json3_files = glob.glob(f"{sub_prefix}*.json3")
         vtt_files = glob.glob(f"{sub_prefix}*.vtt")
         
@@ -326,7 +317,7 @@ def fetch_transcript(
         logger.error(f"yt-dlp subtitle extraction error: {err_msg}")
         errors.append(f"yt-dlp: {err_msg[:120]}")
 
-    # 4. Fallback to audio download + Gemini Speech-to-Text if API key available
+    # 3. Fallback to audio download + Gemini Speech-to-Text if API key available
     if api_key:
         try:
             logger.info("Attempting audio download + Gemini speech transcription fallback...")
@@ -366,9 +357,10 @@ def download_video_segment(
     end_time: float
 ) -> str:
     """
-    Downloads ONLY the requested segment with BOTH video and audio.
-    Filters out DVR m3u8 playlists that cannot seek efficiently.
-    Ensures the resulting file has both video and audio streams.
+    High-Speed Video Segment Downloader:
+    - Prioritizes fast seekable HTTP DASH streams (720p/1080p)
+    - 4 concurrent connection threads
+    - Automatically muxes to MP4/WebM
     """
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
@@ -377,12 +369,14 @@ def download_video_segment(
 
     ydl_opts = get_base_ydl_opts()
     ydl_opts.update({
-        'format': 'bv*[protocol^=http][height<=1080]+ba[protocol^=http]/b[protocol^=http] / bv*[height<=1080]+ba/b',
+        # Fast format: balances high resolution with fast download bandwidth
+        'format': 'bv*[protocol^=http][height<=1080]+ba[protocol^=http] / bv*[height<=720]+ba / b',
         'outtmpl': temp_tmpl,
         'merge_output_format': 'mp4',
         'download_ranges': yt_dlp.utils.download_range_func(None, [(start_time, end_time)]),
         'force_keyframes_at_cuts': True,
         'overwrites': True,
+        'buffersize': 1024 * 1024, # 1MB buffer
     })
 
     logger.info(f"Downloading clip segment {start_time:.1f}s - {end_time:.1f}s for {url}")
