@@ -114,10 +114,12 @@ async def run_render_pipeline(
     video_id: str,
     candidates: List[ClipCandidate],
     layout: str,
-    caption_style: str
+    caption_style: str,
+    video_quality: str = "max",
+    upscale_enabled: bool = True
 ):
     try:
-        update_job(job_id, "downloading", 15, "Download", "Downloading required video segments...", "Starting segment downloads via yt-dlp...")
+        update_job(job_id, "downloading", 15, "Download", f"Downloading {len(candidates)} clips at {video_quality} quality...", "Starting segment downloads via yt-dlp...")
 
         rendered_clips: List[ClipResponse] = []
         total_clips = len(candidates)
@@ -129,13 +131,20 @@ async def run_render_pipeline(
                 "rendering",
                 step_pct,
                 f"Rendering Clip {idx+1}/{total_clips}",
-                f"Generating '{candidate.title}' (9:16 {layout})...",
+                f"Generating '{candidate.title}' (9:16 {layout}, {video_quality} quality)...",
                 f"Processing clip {idx+1}/{total_clips}: {candidate.start_time:.1f}s - {candidate.end_time:.1f}s"
             )
 
-            # 1. Download trimmed video segment
+            # 1. Download trimmed video segment at max quality available + upscale
             segment_raw = os.path.join(DOWNLOADS_DIR, f"{video_id}_{candidate.id}_raw.mp4")
-            actual_raw_path = download_video_segment(url, segment_raw, candidate.start_time, candidate.end_time)
+            actual_raw_path = download_video_segment(
+                url=url,
+                output_path=segment_raw,
+                start_time=candidate.start_time,
+                end_time=candidate.end_time,
+                quality=video_quality,
+                auto_upscale=upscale_enabled
+            )
 
             # 2. Render 9:16 vertical short with chosen layout and burning karaoke captions
             final_clip_filename = f"{video_id}_{candidate.id}.mp4"
@@ -233,7 +242,9 @@ async def generate_all(req: GenerateAllRequest, background_tasks: BackgroundTask
                 video_id=video_id,
                 candidates=candidates,
                 layout=req.layout or "blur_fill",
-                caption_style=req.caption_style or "hormozi"
+                caption_style=req.caption_style or "hormozi",
+                video_quality=req.video_quality or "max",
+                upscale_enabled=req.upscale_enabled if req.upscale_enabled is not None else True
             )
         except Exception as e:
             logger.error(f"Orchestration error: {e}", exc_info=True)
@@ -278,7 +289,9 @@ async def render_single_clip(req: RenderClipRequest, background_tasks: Backgroun
             video_id=req.video_id,
             candidates=[candidate],
             layout=req.layout or "blur_fill",
-            caption_style=req.caption_style or "hormozi"
+            caption_style=req.caption_style or "hormozi",
+            video_quality=req.video_quality or "max",
+            upscale_enabled=req.upscale_enabled if req.upscale_enabled is not None else True
         )
 
     background_tasks.add_task(render_task)

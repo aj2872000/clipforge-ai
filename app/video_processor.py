@@ -15,10 +15,19 @@ class VideoProcessor:
         self.clips_dir = os.path.join(base_dir, "clips")
         self.subtitles_dir = os.path.join(base_dir, "subtitles")
         self.face_tracker = FaceTracker()
+        self.has_cas = self._check_cas_filter()
 
         os.makedirs(self.downloads_dir, exist_ok=True)
         os.makedirs(self.clips_dir, exist_ok=True)
         os.makedirs(self.subtitles_dir, exist_ok=True)
+
+    def _check_cas_filter(self) -> bool:
+        """Check if FFmpeg has CAS (Contrast Adaptive Sharpen) filter compiled."""
+        try:
+            res = subprocess.run(["ffmpeg", "-h", "filter=cas"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            return res.returncode == 0 and "Contrast Adaptive Sharpen" in res.stdout
+        except Exception:
+            return False
 
     def escape_ffmpeg_path(self, path: str) -> str:
         """Escape Windows file paths for FFmpeg filter arguments."""
@@ -87,21 +96,33 @@ class VideoProcessor:
             has_subtitles = False
             escaped_ass = ""
 
+        # High-Fidelity Upscaling & Sharpening filter strings
+        sharpen_filter = "cas=0.55" if self.has_cas else "unsharp=5:5:0.6:5:5:0.2"
+        fg_sharpen = "cas=0.45" if self.has_cas else "unsharp=5:5:0.5:5:5:0.2"
+
         # Build filter complex according to layout
         filter_complex = ""
 
         if layout == "face_crop":
-            # Smart face tracking crop
+            # Smart face tracking crop + Lanczos upscaling + adaptive sharpening
             crop_x, crop_y, crop_w, crop_h = self.face_tracker.track_speaker_center(source_video_path)
-            v_chain = f"[0:v]crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale=1080:1920[cropped]"
+            v_chain = (
+                f"[0:v]crop={crop_w}:{crop_h}:{crop_x}:{crop_y},"
+                f"scale=1080:1920:flags=lanczos+accurate_rnd+full_chroma_int,"
+                f"{sharpen_filter}[cropped]"
+            )
             if has_subtitles:
                 filter_complex = f"{v_chain};[cropped]ass='{escaped_ass}'[outv]"
             else:
                 filter_complex = f"{v_chain};[cropped]null[outv]"
 
         elif layout == "center_crop":
-            # Direct 9:16 center crop
-            v_chain = "[0:v]crop=ih*9/16:ih:(iw-ih*9/16)/2:0,scale=1080:1920[cropped]"
+            # Direct 9:16 center crop + Lanczos upscaling + adaptive sharpening
+            v_chain = (
+                "[0:v]crop=ih*9/16:ih:(iw-ih*9/16)/2:0,"
+                f"scale=1080:1920:flags=lanczos+accurate_rnd+full_chroma_int,"
+                f"{sharpen_filter}[cropped]"
+            )
             if has_subtitles:
                 filter_complex = f"{v_chain};[cropped]ass='{escaped_ass}'[outv]"
             else:
@@ -111,14 +132,14 @@ class VideoProcessor:
             # 1. Downscales background to 270x480 (94% fewer pixels to compute)
             # 2. Runs light boxblur(5:1)
             # 3. Bilinear upscales to 1080x1920 (yielding smooth, cinematic bokeh blur instantly)
-            # 4. Centers the 16:9 foreground over the background
+            # 4. Upscales foreground with Lanczos + CAS sharpening + subtle mobile contrast pop
             v_chain = (
                 "[0:v]split=2[bg_in][fg_in];"
                 "[bg_in]scale=270:480:force_original_aspect_ratio=increase,"
                 "crop=270:480,boxblur=5:1,"
                 "scale=1080:1920:flags=bilinear,"
                 "eq=brightness=-0.08:contrast=1.05[bg];"
-                "[fg_in]scale=1080:-1[fg];"
+                f"[fg_in]scale=1080:-1:flags=lanczos+accurate_rnd+full_chroma_int,{fg_sharpen},eq=contrast=1.03:saturation=1.04[fg];"
                 "[bg][fg]overlay=(W-w)/2:(H-h)/2[merged]"
             )
             if has_subtitles:
@@ -126,7 +147,7 @@ class VideoProcessor:
             else:
                 filter_complex = f"{v_chain};[merged]null[outv]"
 
-        # Execute FFmpeg rendering with 'veryfast' preset and multi-threading
+        # Execute FFmpeg rendering with near-lossless CRF 18, 256k audio, and 'veryfast' preset
         cmd = [
             "ffmpeg", "-y",
             "-threads", "0",
@@ -136,10 +157,10 @@ class VideoProcessor:
             "-map", "0:a?",
             "-c:v", "libx264",
             "-preset", "veryfast",
-            "-crf", "21",
+            "-crf", "18",
             "-pix_fmt", "yuv420p",
             "-c:a", "aac",
-            "-b:a", "128k",
+            "-b:a", "256k",
             "-movflags", "+faststart",
             output_clip_path
         ]

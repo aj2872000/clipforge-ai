@@ -16,6 +16,7 @@ def main():
     parser.add_argument("--clips", type=int, default=3, help="Number of clips to generate")
     parser.add_argument("--layout", default="blur_fill", choices=["blur_fill", "face_crop", "center_crop"], help="9:16 vertical layout framing")
     parser.add_argument("--style", default="hormozi", choices=["hormozi", "beast", "minimal", "neon"], help="Caption animation style")
+    parser.add_argument("--quality", default="max", choices=["max", "1080p", "720p"], help="Video download quality & upscale (max=4K/1440p/1080p)")
     parser.add_argument("--outdir", default="storage/clips", help="Output directory for generated shorts")
 
     args = parser.parse_args()
@@ -52,8 +53,8 @@ def main():
         raw_seg = os.path.join("storage", "downloads", f"{video_id}_{c.id}_raw.mp4")
         out_clip = os.path.join(args.outdir, f"{video_id}_{c.id}.mp4")
 
-        # Download segment
-        download_video_segment(args.url, raw_seg, c.start_time, c.end_time)
+        # Download segment with highest quality stream and optional HD upscaling
+        download_video_segment(args.url, raw_seg, c.start_time, c.end_time, quality=args.quality, auto_upscale=True)
 
         # Render 9:16 vertical short
         processor.render_short_clip(

@@ -8,6 +8,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const maxClips = document.getElementById("maxClips");
   const layoutSelect = document.getElementById("layoutSelect");
   const captionStyle = document.getElementById("captionStyle");
+  const qualitySelect = document.getElementById("qualitySelect");
   const aiProvider = document.getElementById("aiProvider");
   const apiKeyWrapper = document.getElementById("apiKeyWrapper");
   const apiKeyInput = document.getElementById("apiKeyInput");
@@ -69,6 +70,8 @@ document.addEventListener("DOMContentLoaded", () => {
       max_clips: parseInt(maxClips.value) || 3,
       layout: layoutSelect.value,
       caption_style: captionStyle.value,
+      video_quality: qualitySelect ? qualitySelect.value : "max",
+      upscale_enabled: true,
       ai_provider: aiProvider.value,
       api_key: apiKeyInput ? apiKeyInput.value.trim() : null,
       custom_transcript: customTranscript ? customTranscript.value.trim() : null

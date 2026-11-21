@@ -53,6 +53,8 @@ class RenderClipRequest(BaseModel):
     words: Optional[List[TranscriptWord]] = []
     layout: Optional[str] = "blur_fill" # "blur_fill", "face_crop", "center_crop"
     caption_style: Optional[str] = "hormozi" # "hormozi", "beast", "minimal", "neon"
+    video_quality: Optional[str] = "max" # "max", "1080p", "720p"
+    upscale_enabled: Optional[bool] = True
 
 class GenerateAllRequest(BaseModel):
     url: str
@@ -63,6 +65,8 @@ class GenerateAllRequest(BaseModel):
     ai_provider: Optional[str] = "heuristic"
     api_key: Optional[str] = None
     custom_transcript: Optional[str] = None
+    video_quality: Optional[str] = "max"
+    upscale_enabled: Optional[bool] = True
 
 class ClipResponse(BaseModel):
     id: str

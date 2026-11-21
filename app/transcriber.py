@@ -5,6 +5,7 @@ import glob
 import logging
 import shutil
 import base64
+import subprocess
 from typing import List, Dict, Any, Optional, Tuple
 import requests
 import yt_dlp
@@ -350,17 +351,107 @@ def fetch_transcript(
     error_summary = " | ".join(errors) if errors else "YouTube captions unavailable or blocked by server IP."
     return [], error_summary
 
+def probe_video_resolution(video_path: str) -> Tuple[int, int]:
+    """Return (width, height) of video file using cv2 or ffprobe."""
+    try:
+        import cv2
+        cap = cv2.VideoCapture(video_path)
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        cap.release()
+        if w > 0 and h > 0:
+            return w, h
+    except Exception:
+        pass
+
+    try:
+        cmd = [
+            "ffprobe", "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-of", "csv=s=x:p=0",
+            video_path
+        ]
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if res.returncode == 0 and "x" in res.stdout:
+            parts = res.stdout.strip().split("x")
+            return int(parts[0]), int(parts[1])
+    except Exception:
+        pass
+
+    return 1920, 1080
+
+
+def upscale_and_enhance_video(
+    video_path: str,
+    target_height: int = 1080,
+    sharpness: float = 0.55
+) -> str:
+    """
+    Upscale lower-resolution video to target_height (e.g. 1080p Full HD)
+    using high-fidelity Lanczos resampling + Contrast Adaptive Sharpening (CAS).
+    Preserves original aspect ratio and copies original audio stream.
+    """
+    w, h = probe_video_resolution(video_path)
+    if h >= target_height:
+        logger.info(f"Video {video_path} is already {w}x{h} (>= {target_height}p). Native resolution preserved.")
+        return video_path
+
+    logger.info(f"Upscaling downloaded clip from {w}x{h} to {target_height}p with Lanczos + CAS sharpening...")
+    base_no_ext, ext = os.path.splitext(video_path)
+    temp_upscaled = f"{base_no_ext}_upscaled.mp4"
+
+    cas_filter = f"scale=-2:{target_height}:flags=lanczos+accurate_rnd+full_chroma_int,cas={sharpness}"
+    unsharp_filter = f"scale=-2:{target_height}:flags=lanczos+accurate_rnd+full_chroma_int,unsharp=5:5:0.6:5:5:0.2"
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", video_path,
+        "-vf", cas_filter,
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "17",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "copy",
+        temp_upscaled
+    ]
+    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if res.returncode != 0:
+        logger.warning(f"CAS filter failed ({res.stderr[:80] if res.stderr else ''}), falling back to unsharp filter...")
+        cmd[4] = unsharp_filter
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    if res.returncode == 0 and os.path.exists(temp_upscaled) and os.path.getsize(temp_upscaled) > 1000:
+        try:
+            os.replace(temp_upscaled, video_path)
+            logger.info(f"Successfully upscaled video to {target_height}p Full HD!")
+            return video_path
+        except Exception:
+            return temp_upscaled
+    else:
+        logger.warning(f"Upscaling failed, retaining original {w}x{h} video.")
+        if os.path.exists(temp_upscaled):
+            try:
+                os.remove(temp_upscaled)
+            except Exception:
+                pass
+        return video_path
+
+
 def download_video_segment(
     url: str,
     output_path: str,
     start_time: float,
-    end_time: float
+    end_time: float,
+    quality: str = "max",
+    auto_upscale: bool = True
 ) -> str:
     """
-    High-Speed Video Segment Downloader:
-    - Prioritizes fast seekable HTTP DASH streams (720p/1080p)
-    - 4 concurrent connection threads
-    - Automatically muxes to MP4/WebM
+    High-Fidelity Video Segment Downloader:
+    - Extracts the absolute highest quality stream available on YouTube (up to 4K / 2160p / 1440p / 1080p60)
+    - Prioritizes desktop web clients for access to 4K/2K/1080p60 DASH manifests
+    - 4 concurrent fragment connection threads
+    - Automatically upscales lower-resolution videos (<1080p) to crisp 1080p using Lanczos + CAS sharpening
     """
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
@@ -368,9 +459,26 @@ def download_video_segment(
     temp_tmpl = f"{base_no_ext}.%(ext)s"
 
     ydl_opts = get_base_ydl_opts()
+
+    # Prioritize web client first to fetch 4K/1440p/1080p60 manifests; fallback to mobile clients if needed
+    ydl_opts['extractor_args'] = {
+        'youtube': {
+            'player_client': ['web', 'mweb', 'ios', 'android']
+        }
+    }
+
+    # Format configuration based on requested quality
+    if quality == "720p":
+        ydl_opts['format'] = 'bestvideo*[height<=720]+bestaudio/best[height<=720]/best'
+        ydl_opts['format_sort'] = ['res:720', 'fps', 'tbr']
+    elif quality == "1080p":
+        ydl_opts['format'] = 'bestvideo*[height<=1080]+bestaudio/best[height<=1080]/best'
+        ydl_opts['format_sort'] = ['res:1080', 'fps', 'codec:vp9', 'tbr']
+    else: # "max" - Full highest quality available on YouTube
+        ydl_opts['format'] = 'bestvideo*+bestaudio/best'
+        ydl_opts['format_sort'] = ['res', 'fps', 'codec:vp9', 'tbr', 'size']
+
     ydl_opts.update({
-        # Fast format: balances high resolution with fast download bandwidth
-        'format': 'bv*[protocol^=http][height<=1080]+ba[protocol^=http] / bv*[height<=720]+ba / b',
         'outtmpl': temp_tmpl,
         'merge_output_format': 'mp4',
         'download_ranges': yt_dlp.utils.download_range_func(None, [(start_time, end_time)]),
@@ -379,20 +487,37 @@ def download_video_segment(
         'buffersize': 1024 * 1024, # 1MB buffer
     })
 
-    logger.info(f"Downloading clip segment {start_time:.1f}s - {end_time:.1f}s for {url}")
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
+    logger.info(f"Downloading clip segment {start_time:.1f}s - {end_time:.1f}s at max quality for {url}")
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+    except Exception as e:
+        logger.warning(f"Primary format download failed ({e}), falling back to generic best stream...")
+        # Fallback format for restricted or legacy videos
+        ydl_opts['format'] = 'bv*+ba/b'
+        ydl_opts['extractor_args']['youtube']['player_client'] = ['android', 'ios', 'mweb', 'web']
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
 
+    result_file = None
     expected_mp4 = f"{base_no_ext}.mp4"
     if os.path.exists(expected_mp4) and os.path.getsize(expected_mp4) > 1000:
-        return expected_mp4
-        
-    for ext in [".webm", ".mkv", ".m4v"]:
-        cand = f"{base_no_ext}{ext}"
-        if os.path.exists(cand) and os.path.getsize(cand) > 1000:
-            return cand
+        result_file = expected_mp4
+    else:
+        for ext in [".webm", ".mkv", ".m4v"]:
+            cand = f"{base_no_ext}{ext}"
+            if os.path.exists(cand) and os.path.getsize(cand) > 1000:
+                result_file = cand
+                break
 
-    if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
-        return output_path
+    if not result_file and os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+        result_file = output_path
 
-    raise RuntimeError("Downloaded video segment file not found or is empty.")
+    if not result_file:
+        raise RuntimeError("Downloaded video segment file not found or is empty.")
+
+    # Apply automatic HD upscaling if downloaded video is < 1080p
+    if auto_upscale:
+        result_file = upscale_and_enhance_video(result_file, target_height=1080)
+
+    return result_file
