@@ -8,7 +8,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const maxClips = document.getElementById("maxClips");
   const layoutSelect = document.getElementById("layoutSelect");
   const captionStyle = document.getElementById("captionStyle");
-  const qualitySelect = document.getElementById("qualitySelect");
   const aiProvider = document.getElementById("aiProvider");
   const apiKeyWrapper = document.getElementById("apiKeyWrapper");
   const apiKeyInput = document.getElementById("apiKeyInput");
@@ -28,6 +27,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const clipsCountSpan = document.getElementById("clipsCount");
 
   let activePollInterval = null;
+  const renderedClipIds = new Set();
 
   // Toggle API key input visibility based on provider
   if (aiProvider) {
@@ -70,8 +70,6 @@ document.addEventListener("DOMContentLoaded", () => {
       max_clips: parseInt(maxClips.value) || 3,
       layout: layoutSelect.value,
       caption_style: captionStyle.value,
-      video_quality: qualitySelect ? qualitySelect.value : "max",
-      upscale_enabled: true,
       ai_provider: aiProvider.value,
       api_key: apiKeyInput ? apiKeyInput.value.trim() : null,
       custom_transcript: customTranscript ? customTranscript.value.trim() : null
@@ -104,6 +102,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   function startJobUI(initialTitle) {
+    renderedClipIds.clear();
     progressCard.style.display = "block";
     progressCard.scrollIntoView({ behavior: "smooth" });
     progressTitle.innerText = initialTitle;
@@ -158,11 +157,17 @@ document.addEventListener("DOMContentLoaded", () => {
           terminalLogs.scrollTop = terminalLogs.scrollHeight;
         }
 
+        // Real-time incremental clip availability:
+        // As soon as each clip is completed, immediately display it so the user can watch & download right away!
+        if (job.clips && job.clips.length > 0) {
+          renderIncrementalResults(job.clips, job.status !== "completed");
+        }
+
         if (job.status === "completed") {
           clearInterval(activePollInterval);
           resetJobUI();
           updateStepper(5);
-          renderResults(job.clips || []);
+          renderIncrementalResults(job.clips || [], false);
         } else if (job.status === "failed") {
           clearInterval(activePollInterval);
           resetJobUI();
@@ -174,17 +179,49 @@ document.addEventListener("DOMContentLoaded", () => {
     }, 1200);
   }
 
-  function renderResults(clips) {
+  function renderIncrementalResults(clips, isStillProcessing) {
     resultsSection.style.display = "block";
-    resultsSection.scrollIntoView({ behavior: "smooth" });
-    clipsCountSpan.innerText = `(${clips.length})`;
 
-    if (clips.length === 0) {
-      clipsGrid.innerHTML = `<p style="grid-column: 1/-1; text-align: center; color: var(--text-muted);">No clips generated.</p>`;
-      return;
+    // Detect new clips that haven't been rendered yet
+    const newClips = clips.filter((c) => !renderedClipIds.has(c.id));
+
+    // First time showing results: scroll down gently
+    if (renderedClipIds.size === 0 && clips.length > 0) {
+      resultsSection.scrollIntoView({ behavior: "smooth" });
     }
 
-    clipsGrid.innerHTML = clips.map((clip) => createClipCard(clip)).join("");
+    if (newClips.length > 0) {
+      // Remove any existing placeholder card before appending new clips
+      const placeholder = document.getElementById("renderingPlaceholderCard");
+      if (placeholder) placeholder.remove();
+
+      newClips.forEach((clip) => {
+        renderedClipIds.add(clip.id);
+        const cardHtml = createClipCard(clip);
+        clipsGrid.insertAdjacentHTML("beforeend", cardHtml);
+      });
+    }
+
+    // If more clips are being rendered, show an active processing indicator card at the end
+    if (isStillProcessing) {
+      clipsCountSpan.innerText = `(${clips.length} ready — rendering next...)`;
+      if (!document.getElementById("renderingPlaceholderCard")) {
+        const placeholderHtml = `
+          <div class="clip-card" id="renderingPlaceholderCard" style="border: 2px dashed rgba(99, 102, 241, 0.45); background: rgba(30, 41, 59, 0.4); display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 420px; text-align: center; padding: 24px; border-radius: 16px;">
+            <div class="spinner" style="width: 44px; height: 44px; border-width: 4px; border-top-color: #6366f1; margin-bottom: 16px;"></div>
+            <h4 style="color: #e0e7ff; margin-bottom: 8px; font-size: 16px; font-weight: 600;">Rendering Next Short...</h4>
+            <p style="color: var(--text-muted); font-size: 13px; max-width: 220px; line-height: 1.5;">
+              Your completed shorts above are ready to watch and download right now!
+            </p>
+          </div>
+        `;
+        clipsGrid.insertAdjacentHTML("beforeend", placeholderHtml);
+      }
+    } else {
+      clipsCountSpan.innerText = `(${clips.length})`;
+      const placeholder = document.getElementById("renderingPlaceholderCard");
+      if (placeholder) placeholder.remove();
+    }
   }
 
   function createClipCard(clip) {
@@ -194,10 +231,13 @@ document.addEventListener("DOMContentLoaded", () => {
       .join("");
 
     return `
-      <div class="clip-card">
+      <div class="clip-card" id="clip-card-${clip.id}">
         <div class="video-container">
           <div class="virality-badge" style="border-color: ${scoreColor}; color: ${scoreColor};">
             🔥 ${clip.virality_score}/100 Virality
+          </div>
+          <div style="position: absolute; top: 12px; left: 12px; background: rgba(15, 23, 42, 0.85); border-radius: 6px; padding: 4px 8px; font-size: 11px; font-weight: 700; color: #a5b4fc; border: 1px solid rgba(165, 180, 252, 0.35); backdrop-filter: blur(4px);">
+            💎 Ultra-HD (2K/4K)
           </div>
           <div class="duration-badge">${Math.round(clip.duration)}s</div>
           <video 
@@ -230,8 +270,8 @@ document.addEventListener("DOMContentLoaded", () => {
           </div>
 
           <div class="clip-actions">
-            <a href="${clip.download_url}" download class="btn btn-primary">
-              ⬇ Download MP4
+            <a href="${clip.download_url}" download class="btn btn-primary" style="display: inline-flex; align-items: center; justify-content: center; gap: 6px;">
+              <span>⬇ Download Ultra-HD</span>
             </a>
             ${clip.subtitles_url ? `
               <a href="${clip.subtitles_url}" download class="btn btn-secondary" title="Download Subtitles">

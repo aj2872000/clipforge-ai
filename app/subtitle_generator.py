@@ -94,24 +94,33 @@ def build_ass_subtitles(
     output_path: str,
     style_key: str = "hormozi",
     clip_offset: float = 0.0,
-    words_per_group: int = 3
+    words_per_group: int = 3,
+    target_w: int = 1440,
+    target_h: int = 2560
 ) -> str:
     """
     Generate an ASS subtitle file with animated active-word popping karaoke highlights.
     clip_offset: start_time of the clip in the full video, so subtitle timestamps start at 0.0s.
+    target_w, target_h: dynamically scales font sizes and margins to match 1440p (2K) or 2160p (4K).
     """
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     cfg = STYLE_PRESETS.get(style_key.lower(), STYLE_PRESETS["hormozi"])
 
+    scale_factor = target_h / 1920.0
+    scaled_fontsize = int(cfg['fontsize'] * scale_factor)
+    scaled_margin_v = int(cfg['margin_v'] * scale_factor)
+    scaled_outline = max(2, int(cfg['outline'] * scale_factor))
+    scaled_shadow = max(0, int(cfg['shadow'] * scale_factor))
+
     ass_header = f"""[Script Info]
 ScriptType: v4.00+
-PlayResX: 1080
-PlayResY: 1920
+PlayResX: {target_w}
+PlayResY: {target_h}
 ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: {cfg['name']},{cfg['font']},{cfg['fontsize']},{cfg['primary_color']},{cfg['active_color']},{cfg['outline_color']},{cfg['back_color']},{cfg['bold']},0,0,0,100,100,2,0,{cfg['border_style']},{cfg['outline']},{cfg['shadow']},{cfg['alignment']},40,40,{cfg['margin_v']},1
+Style: {cfg['name']},{cfg['font']},{scaled_fontsize},{cfg['primary_color']},{cfg['active_color']},{cfg['outline_color']},{cfg['back_color']},{cfg['bold']},0,0,0,100,100,2,0,{cfg['border_style']},{scaled_outline},{scaled_shadow},{cfg['alignment']},40,40,{scaled_margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text

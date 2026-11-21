@@ -442,16 +442,13 @@ def download_video_segment(
     url: str,
     output_path: str,
     start_time: float,
-    end_time: float,
-    quality: str = "max",
-    auto_upscale: bool = True
+    end_time: float
 ) -> str:
     """
     High-Fidelity Video Segment Downloader:
     - Extracts the absolute highest quality stream available on YouTube (up to 4K / 2160p / 1440p / 1080p60)
     - Prioritizes desktop web clients for access to 4K/2K/1080p60 DASH manifests
-    - 4 concurrent fragment connection threads
-    - Automatically upscales lower-resolution videos (<1080p) to crisp 1080p using Lanczos + CAS sharpening
+    - Uses concurrent connections and near-lossless cut postprocessing (CRF 16)
     """
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
@@ -467,16 +464,9 @@ def download_video_segment(
         }
     }
 
-    # Format configuration based on requested quality
-    if quality == "720p":
-        ydl_opts['format'] = 'bestvideo*[height<=720]+bestaudio/best[height<=720]/best'
-        ydl_opts['format_sort'] = ['res:720', 'fps', 'tbr']
-    elif quality == "1080p":
-        ydl_opts['format'] = 'bestvideo*[height<=1080]+bestaudio/best[height<=1080]/best'
-        ydl_opts['format_sort'] = ['res:1080', 'fps', 'codec:vp9', 'tbr']
-    else: # "max" - Full highest quality available on YouTube
-        ydl_opts['format'] = 'bestvideo*+bestaudio/best'
-        ydl_opts['format_sort'] = ['res', 'fps', 'codec:vp9', 'tbr', 'size']
+    # Always select the absolute highest resolution & bitrate available on YouTube
+    ydl_opts['format'] = 'bestvideo*+bestaudio/best'
+    ydl_opts['format_sort'] = ['res', 'fps', 'codec:vp9', 'tbr', 'size']
 
     ydl_opts.update({
         'outtmpl': temp_tmpl,
@@ -485,15 +475,17 @@ def download_video_segment(
         'force_keyframes_at_cuts': True,
         'overwrites': True,
         'buffersize': 1024 * 1024, # 1MB buffer
+        'postprocessor_args': {
+            'ffmpeg': ['-c:v', 'libx264', '-crf', '16', '-preset', 'fast']
+        }
     })
 
-    logger.info(f"Downloading clip segment {start_time:.1f}s - {end_time:.1f}s at max quality for {url}")
+    logger.info(f"Downloading clip segment {start_time:.1f}s - {end_time:.1f}s at highest available YouTube quality for {url}")
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
     except Exception as e:
         logger.warning(f"Primary format download failed ({e}), falling back to generic best stream...")
-        # Fallback format for restricted or legacy videos
         ydl_opts['format'] = 'bv*+ba/b'
         ydl_opts['extractor_args']['youtube']['player_client'] = ['android', 'ios', 'mweb', 'web']
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -515,9 +507,5 @@ def download_video_segment(
 
     if not result_file:
         raise RuntimeError("Downloaded video segment file not found or is empty.")
-
-    # Apply automatic HD upscaling if downloaded video is < 1080p
-    if auto_upscale:
-        result_file = upscale_and_enhance_video(result_file, target_height=1080)
 
     return result_file

@@ -86,9 +86,38 @@ class VideoProcessor:
         srt_path = os.path.join(self.subtitles_dir, f"{clip_id}.srt")
         thumb_path = os.path.splitext(output_clip_path)[0] + ".jpg"
 
-        # Generate subtitles
+        # Probe source video dimensions to match highest available resolution
+        src_w, src_h = 1920, 1080
+        try:
+            import cv2
+            cap = cv2.VideoCapture(source_video_path)
+            if cap.isOpened():
+                src_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 1920
+                src_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 1080
+                cap.release()
+        except Exception:
+            pass
+
+        # Target resolution higher than 1080p:
+        # If source is 4K (height >= 2160 or width >= 3840): output 2160x3840 (4K UHD 9:16)
+        # Otherwise: output 1440x2560 (2K QHD 9:16)
+        if src_h >= 2160 or src_w >= 3840:
+            target_w, target_h = 2160, 3840
+            logger.info(f"Source video is 4K ({src_w}x{src_h}). Rendering 4K Ultra-HD vertical short (2160x3840).")
+        else:
+            target_w, target_h = 1440, 2560
+            logger.info(f"Source video is {src_w}x{src_h}. Rendering 2K QHD vertical short (1440x2560).")
+
+        # Generate subtitles scaled proportionally to target resolution
         if words:
-            build_ass_subtitles(words, ass_path, style_key=caption_style, clip_offset=start_time_offset)
+            build_ass_subtitles(
+                words=words,
+                output_path=ass_path,
+                style_key=caption_style,
+                clip_offset=start_time_offset,
+                target_w=target_w,
+                target_h=target_h
+            )
             build_srt_subtitles(words, srt_path, clip_offset=start_time_offset)
             has_subtitles = True
             escaped_ass = self.escape_ffmpeg_path(ass_path)
@@ -104,11 +133,11 @@ class VideoProcessor:
         filter_complex = ""
 
         if layout == "face_crop":
-            # Smart face tracking crop + Lanczos upscaling + adaptive sharpening
+            # Smart face tracking crop + Lanczos upscaling + adaptive sharpening to target resolution
             crop_x, crop_y, crop_w, crop_h = self.face_tracker.track_speaker_center(source_video_path)
             v_chain = (
                 f"[0:v]crop={crop_w}:{crop_h}:{crop_x}:{crop_y},"
-                f"scale=1080:1920:flags=lanczos+accurate_rnd+full_chroma_int,"
+                f"scale={target_w}:{target_h}:flags=lanczos+accurate_rnd+full_chroma_int,"
                 f"{sharpen_filter}[cropped]"
             )
             if has_subtitles:
@@ -117,10 +146,10 @@ class VideoProcessor:
                 filter_complex = f"{v_chain};[cropped]null[outv]"
 
         elif layout == "center_crop":
-            # Direct 9:16 center crop + Lanczos upscaling + adaptive sharpening
+            # Direct 9:16 center crop + Lanczos upscaling + adaptive sharpening to target resolution
             v_chain = (
                 "[0:v]crop=ih*9/16:ih:(iw-ih*9/16)/2:0,"
-                f"scale=1080:1920:flags=lanczos+accurate_rnd+full_chroma_int,"
+                f"scale={target_w}:{target_h}:flags=lanczos+accurate_rnd+full_chroma_int,"
                 f"{sharpen_filter}[cropped]"
             )
             if has_subtitles:
@@ -128,18 +157,16 @@ class VideoProcessor:
             else:
                 filter_complex = f"{v_chain};[cropped]null[outv]"
 
-        else: # Default: blur_fill (High-Speed Downscale-Blur-Upscale Algorithm)
-            # 1. Downscales background to 270x480 (94% fewer pixels to compute)
-            # 2. Runs light boxblur(5:1)
-            # 3. Bilinear upscales to 1080x1920 (yielding smooth, cinematic bokeh blur instantly)
-            # 4. Upscales foreground with Lanczos + CAS sharpening + subtle mobile contrast pop
+        else: # Default: blur_fill (High-Speed Downscale-Blur-Upscale Algorithm in Ultra-HD)
+            bg_scale_w = int(target_w / 4)
+            bg_scale_h = int(target_h / 4)
             v_chain = (
                 "[0:v]split=2[bg_in][fg_in];"
-                "[bg_in]scale=270:480:force_original_aspect_ratio=increase,"
-                "crop=270:480,boxblur=5:1,"
-                "scale=1080:1920:flags=bilinear,"
+                f"[bg_in]scale={bg_scale_w}:{bg_scale_h}:force_original_aspect_ratio=increase,"
+                f"crop={bg_scale_w}:{bg_scale_h},boxblur=5:1,"
+                f"scale={target_w}:{target_h}:flags=bilinear,"
                 "eq=brightness=-0.08:contrast=1.05[bg];"
-                f"[fg_in]scale=1080:-1:flags=lanczos+accurate_rnd+full_chroma_int,{fg_sharpen},eq=contrast=1.03:saturation=1.04[fg];"
+                f"[fg_in]scale={target_w}:-1:flags=lanczos+accurate_rnd+full_chroma_int,{fg_sharpen},eq=contrast=1.03:saturation=1.04[fg];"
                 "[bg][fg]overlay=(W-w)/2:(H-h)/2[merged]"
             )
             if has_subtitles:
@@ -147,7 +174,7 @@ class VideoProcessor:
             else:
                 filter_complex = f"{v_chain};[merged]null[outv]"
 
-        # Execute FFmpeg rendering with near-lossless CRF 18, 256k audio, and 'veryfast' preset
+        # Execute FFmpeg rendering with near-lossless CRF 16, 320k audio, and 'veryfast' preset
         cmd = [
             "ffmpeg", "-y",
             "-threads", "0",
@@ -157,10 +184,10 @@ class VideoProcessor:
             "-map", "0:a?",
             "-c:v", "libx264",
             "-preset", "veryfast",
-            "-crf", "18",
+            "-crf", "16",
             "-pix_fmt", "yuv420p",
             "-c:a", "aac",
-            "-b:a", "256k",
+            "-b:a", "320k",
             "-movflags", "+faststart",
             output_clip_path
         ]

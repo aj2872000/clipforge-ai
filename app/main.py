@@ -114,12 +114,10 @@ async def run_render_pipeline(
     video_id: str,
     candidates: List[ClipCandidate],
     layout: str,
-    caption_style: str,
-    video_quality: str = "max",
-    upscale_enabled: bool = True
+    caption_style: str
 ):
     try:
-        update_job(job_id, "downloading", 15, "Download", f"Downloading {len(candidates)} clips at {video_quality} quality...", "Starting segment downloads via yt-dlp...")
+        update_job(job_id, "downloading", 15, "Download", f"Downloading {len(candidates)} clips at max YouTube resolution...", "Starting segment downloads via yt-dlp...")
 
         rendered_clips: List[ClipResponse] = []
         total_clips = len(candidates)
@@ -131,22 +129,20 @@ async def run_render_pipeline(
                 "rendering",
                 step_pct,
                 f"Rendering Clip {idx+1}/{total_clips}",
-                f"Generating '{candidate.title}' (9:16 {layout}, {video_quality} quality)...",
+                f"Generating '{candidate.title}' in Ultra-HD (9:16 {layout})...",
                 f"Processing clip {idx+1}/{total_clips}: {candidate.start_time:.1f}s - {candidate.end_time:.1f}s"
             )
 
-            # 1. Download trimmed video segment at max quality available + upscale
+            # 1. Download trimmed video segment at max quality available
             segment_raw = os.path.join(DOWNLOADS_DIR, f"{video_id}_{candidate.id}_raw.mp4")
             actual_raw_path = download_video_segment(
                 url=url,
                 output_path=segment_raw,
                 start_time=candidate.start_time,
-                end_time=candidate.end_time,
-                quality=video_quality,
-                auto_upscale=upscale_enabled
+                end_time=candidate.end_time
             )
 
-            # 2. Render 9:16 vertical short with chosen layout and burning karaoke captions
+            # 2. Render 9:16 vertical short in Ultra-HD (1440p/4K)
             final_clip_filename = f"{video_id}_{candidate.id}.mp4"
             final_clip_path = os.path.join(CLIPS_DIR, final_clip_filename)
 
@@ -167,7 +163,7 @@ async def run_render_pipeline(
                 except Exception:
                     pass
 
-            rendered_clips.append(ClipResponse(
+            clip_item = ClipResponse(
                 id=candidate.id,
                 title=candidate.title,
                 virality_score=candidate.virality_score,
@@ -181,10 +177,22 @@ async def run_render_pipeline(
                 thumbnail_url=f"/api/stream/{os.path.splitext(final_clip_filename)[0]}.jpg",
                 subtitles_url=f"/api/subtitle/{candidate.id}.srt",
                 hashtags=candidate.hashtags or ["#shorts", "#viral"]
-            ))
+            )
+            rendered_clips.append(clip_item)
+
+            # Make this clip available for immediate download in real-time
+            jobs[job_id].clips = list(rendered_clips)
+            update_job(
+                job_id,
+                "rendering",
+                20 + int(((idx + 1) / total_clips) * 75),
+                f"Short #{idx+1} Ready",
+                f"Short #{idx+1} is ready for download! Rendering next clip...",
+                f"✓ Short #{idx+1} ('{candidate.title}') rendered in Ultra-HD and ready for download."
+            )
 
         jobs[job_id].clips = rendered_clips
-        update_job(job_id, "completed", 100, "Finished", f"Successfully created {len(rendered_clips)} viral shorts!", "All clips rendered and ready for download.")
+        update_job(job_id, "completed", 100, "Finished", f"Successfully created {len(rendered_clips)} viral shorts in Ultra-HD!", "All clips rendered and ready for download.")
     except Exception as e:
         logger.error(f"Render pipeline failed for job {job_id}: {e}", exc_info=True)
         jobs[job_id].error = str(e)
@@ -242,9 +250,7 @@ async def generate_all(req: GenerateAllRequest, background_tasks: BackgroundTask
                 video_id=video_id,
                 candidates=candidates,
                 layout=req.layout or "blur_fill",
-                caption_style=req.caption_style or "hormozi",
-                video_quality=req.video_quality or "max",
-                upscale_enabled=req.upscale_enabled if req.upscale_enabled is not None else True
+                caption_style=req.caption_style or "hormozi"
             )
         except Exception as e:
             logger.error(f"Orchestration error: {e}", exc_info=True)
@@ -289,9 +295,7 @@ async def render_single_clip(req: RenderClipRequest, background_tasks: Backgroun
             video_id=req.video_id,
             candidates=[candidate],
             layout=req.layout or "blur_fill",
-            caption_style=req.caption_style or "hormozi",
-            video_quality=req.video_quality or "max",
-            upscale_enabled=req.upscale_enabled if req.upscale_enabled is not None else True
+            caption_style=req.caption_style or "hormozi"
         )
 
     background_tasks.add_task(render_task)
