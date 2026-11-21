@@ -2,8 +2,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const urlInput = document.getElementById("urlInput");
   const createBtn = document.getElementById("createBtn");
   const demoBtn = document.getElementById("demoBtn");
-  const optionsToggle = document.getElementById("optionsToggle");
-  const optionsPanel = document.getElementById("optionsPanel");
 
   // Options
   const targetDuration = document.getElementById("targetDuration");
@@ -13,6 +11,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const aiProvider = document.getElementById("aiProvider");
   const apiKeyWrapper = document.getElementById("apiKeyWrapper");
   const apiKeyInput = document.getElementById("apiKeyInput");
+  const customTranscript = document.getElementById("customTranscript");
 
   // Progress elements
   const progressCard = document.getElementById("progressCard");
@@ -71,7 +70,8 @@ document.addEventListener("DOMContentLoaded", () => {
       layout: layoutSelect.value,
       caption_style: captionStyle.value,
       ai_provider: aiProvider.value,
-      api_key: apiKeyInput ? apiKeyInput.value.trim() : null
+      api_key: apiKeyInput ? apiKeyInput.value.trim() : null,
+      custom_transcript: customTranscript ? customTranscript.value.trim() : null
     };
 
     try {
@@ -142,14 +142,12 @@ document.addEventListener("DOMContentLoaded", () => {
         progressFill.style.width = `${job.progress}%`;
         progressTitle.innerText = job.message || "Processing video...";
 
-        // Update stepper based on progress
         if (job.progress < 20) updateStepper(1);
         else if (job.progress < 40) updateStepper(2);
         else if (job.progress < 70) updateStepper(3);
         else if (job.progress < 95) updateStepper(4);
         else updateStepper(5);
 
-        // Update live logs
         if (job.logs && job.logs.length > 0) {
           terminalLogs.innerHTML = job.logs
             .map((log) => `<p>[${new Date().toLocaleTimeString()}] ${escapeHtml(log)}</p>`)
@@ -157,7 +155,6 @@ document.addEventListener("DOMContentLoaded", () => {
           terminalLogs.scrollTop = terminalLogs.scrollHeight;
         }
 
-        // Finished or failed
         if (job.status === "completed") {
           clearInterval(activePollInterval);
           resetJobUI();

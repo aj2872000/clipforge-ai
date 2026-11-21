@@ -42,6 +42,7 @@ class AnalyzeRequest(BaseModel):
     max_clips: Optional[int] = 3
     ai_provider: Optional[str] = "heuristic" # "heuristic", "gemini", "openai"
     api_key: Optional[str] = None
+    custom_transcript: Optional[str] = None
 
 class RenderClipRequest(BaseModel):
     url: str
@@ -61,6 +62,7 @@ class GenerateAllRequest(BaseModel):
     caption_style: Optional[str] = "hormozi"
     ai_provider: Optional[str] = "heuristic"
     api_key: Optional[str] = None
+    custom_transcript: Optional[str] = None
 
 class ClipResponse(BaseModel):
     id: str

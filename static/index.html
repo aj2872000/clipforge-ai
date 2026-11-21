@@ -99,9 +99,26 @@
           </div>
 
           <div class="option-item" id="apiKeyWrapper" style="display: none;">
-            <label for="apiKeyInput">API Key</label>
-            <input type="password" id="apiKeyInput" class="select-custom" placeholder="Paste API Key">
+            <label for="apiKeyInput">Gemini / OpenAI Key</label>
+            <input type="password" id="apiKeyInput" class="select-custom" placeholder="Paste API Key (enables Audio STT)">
           </div>
+        </div>
+
+        <!-- Optional Custom Transcript Box -->
+        <div style="margin-top: 16px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 12px; text-align: left;">
+          <details style="cursor: pointer;">
+            <summary style="font-size: 13px; font-weight: 600; color: #a5b4fc; outline: none;">
+              📝 Custom Transcript (Optional - Bypasses YouTube Cloud IP Blocks)
+            </summary>
+            <div style="margin-top: 10px;">
+              <textarea 
+                id="customTranscript" 
+                rows="4" 
+                style="width: 100%; background: rgba(15, 20, 32, 0.9); border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 8px; color: #fff; padding: 10px; font-size: 13px; font-family: monospace; resize: vertical;" 
+                placeholder="If YouTube blocks automatic caption downloads on your cloud server, paste YouTube's transcript here (from YouTube's '... -> Show Transcript' button) or plain speech text with timestamps."
+              ></textarea>
+            </div>
+          </details>
         </div>
       </div>
     </section>

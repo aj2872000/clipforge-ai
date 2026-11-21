@@ -75,12 +75,20 @@ async def analyze_video(req: AnalyzeRequest):
     try:
         logger.info(f"Analyzing YouTube video: {req.url}")
         meta = fetch_video_metadata(req.url)
-        segments = fetch_transcript(video_id, download_dir=DOWNLOADS_DIR)
+        segments, err_msg = fetch_transcript(
+            video_id,
+            download_dir=DOWNLOADS_DIR,
+            custom_transcript=req.custom_transcript,
+            api_key=req.api_key
+        )
 
         if not segments:
             raise HTTPException(
                 status_code=400,
-                detail="Could not retrieve transcript/subtitles for this video. Please ensure the video has English audio or captions."
+                detail=(
+                    f"Could not retrieve transcripts from YouTube: {err_msg}. "
+                    "Tip: You can paste the transcript directly in the 'Custom Transcript' field."
+                )
             )
 
         candidates = detect_clips(
@@ -193,9 +201,18 @@ async def generate_all(req: GenerateAllRequest, background_tasks: BackgroundTask
     async def orchestrate():
         try:
             update_job(job_id, "analyzing", 10, "AI Analysis", "Curating viral moments & calculating hooks...", "Fetching transcripts and analyzing hooks...")
-            segments = fetch_transcript(video_id, download_dir=DOWNLOADS_DIR)
+            segments, err_msg = fetch_transcript(
+                video_id,
+                download_dir=DOWNLOADS_DIR,
+                custom_transcript=req.custom_transcript,
+                api_key=req.api_key
+            )
             if not segments:
-                raise RuntimeError("No transcript or auto-captions could be extracted for this video.")
+                raise RuntimeError(
+                    f"Could not retrieve captions from YouTube ({err_msg}). "
+                    "YouTube often blocks datacenter/cloud IPs. "
+                    "Fix: Paste the video transcript into the 'Custom Transcript' field in the UI."
+                )
 
             candidates = detect_clips(
                 segments=segments,
