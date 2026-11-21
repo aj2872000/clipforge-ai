@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+storage/downloads/*
+!storage/downloads/.gitkeep
+storage/clips/*
+!storage/clips/.gitkeep
+storage/subtitles/*
+!storage/subtitles/.gitkeep
+.vscode/
+.idea/
+*.log

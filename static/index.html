@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ClipForge AI - YouTube to Viral Shorts Creator (Opus Clip Alternative)</title>
+  <link rel="stylesheet" href="/css/styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>">
+</head>
+<body>
+  <div class="ambient-glow-1"></div>
+  <div class="ambient-glow-2"></div>
+
+  <!-- Header -->
+  <header>
+    <div class="container nav-content">
+      <div class="logo">
+        <span>🎬</span>
+        <span class="logo-badge">ClipForge AI</span>
+        <span class="engine-tag">Opus Clip Engine</span>
+      </div>
+      <div class="nav-actions">
+        <button id="demoBtn" class="btn btn-demo" title="Try a 5-second synthetic demo instantly">
+          ⚡ Quick Demo
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Hero & Input Section -->
+  <main class="container">
+    <section class="hero">
+      <h1>Turn Long YouTube Videos Into<br><span>Viral Shorts & Reels</span></h1>
+      <p>Automatically extract viral hooks, reframe to 9:16 vertical video, and burn dynamic karaoke subtitles with one click.</p>
+
+      <div class="input-card">
+        <div class="url-input-group">
+          <div class="url-input-wrapper">
+            <span class="url-icon">🔗</span>
+            <input 
+              type="text" 
+              id="urlInput" 
+              class="url-input" 
+              placeholder="Paste any YouTube video link (e.g. https://www.youtube.com/watch?v=...)"
+            >
+          </div>
+          <button id="createBtn" class="btn btn-primary">
+            <span>✨ Create Viral Shorts</span>
+          </button>
+        </div>
+
+        <!-- Options Drawer -->
+        <div class="options-panel" id="optionsPanel">
+          <div class="option-item">
+            <label for="targetDuration">Clip Length</label>
+            <select id="targetDuration" class="select-custom">
+              <option value="30-60" selected>30 - 60s (Recommended)</option>
+              <option value="15-30">15 - 30s (Fast Hook)</option>
+              <option value="60-90">60 - 90s (In-depth)</option>
+            </select>
+          </div>
+
+          <div class="option-item">
+            <label for="layoutSelect">9:16 Framing Mode</label>
+            <select id="layoutSelect" class="select-custom">
+              <option value="blur_fill" selected>Blurred Background (Opus Standard)</option>
+              <option value="face_crop">Smart Face Tracking Crop</option>
+              <option value="center_crop">Center Crop 9:16</option>
+            </select>
+          </div>
+
+          <div class="option-item">
+            <label for="captionStyle">Caption Animation</label>
+            <select id="captionStyle" class="select-custom">
+              <option value="hormozi" selected>Alex Hormozi (Yellow/Green)</option>
+              <option value="beast">MrBeast (Punchy Bold)</option>
+              <option value="neon">Cyberpunk Neon</option>
+              <option value="minimal">Clean Minimalist Box</option>
+            </select>
+          </div>
+
+          <div class="option-item">
+            <label for="maxClips">Max Shorts</label>
+            <select id="maxClips" class="select-custom">
+              <option value="1">1 Top Short</option>
+              <option value="2">2 Top Shorts</option>
+              <option value="3" selected>3 Top Shorts</option>
+              <option value="5">5 Top Shorts</option>
+            </select>
+          </div>
+
+          <div class="option-item">
+            <label for="aiProvider">AI Virality Engine</label>
+            <select id="aiProvider" class="select-custom">
+              <option value="heuristic" selected>Built-in AI (Instant / No Key)</option>
+              <option value="gemini">Google Gemini 2.0</option>
+              <option value="openai">OpenAI GPT-4o</option>
+            </select>
+          </div>
+
+          <div class="option-item" id="apiKeyWrapper" style="display: none;">
+            <label for="apiKeyInput">API Key</label>
+            <input type="password" id="apiKeyInput" class="select-custom" placeholder="Paste API Key">
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Progress / Stepper Section -->
+    <section class="progress-card" id="progressCard">
+      <div class="progress-header">
+        <div class="progress-title" id="progressTitle">Initializing Opus Clip Pipeline...</div>
+        <div class="progress-pct" id="progressPct">0%</div>
+      </div>
+
+      <div class="progress-track">
+        <div class="progress-fill" id="progressFill"></div>
+      </div>
+
+      <div class="stepper">
+        <div class="step-item active" id="step1">
+          <div class="step-circle">1</div>
+          <div class="step-label">Audio & Subs</div>
+        </div>
+        <div class="step-item" id="step2">
+          <div class="step-circle">2</div>
+          <div class="step-label">AI Virality Hook</div>
+        </div>
+        <div class="step-item" id="step3">
+          <div class="step-circle">3</div>
+          <div class="step-label">9:16 Reframing</div>
+        </div>
+        <div class="step-item" id="step4">
+          <div class="step-circle">4</div>
+          <div class="step-label">Karaoke Captions</div>
+        </div>
+        <div class="step-item" id="step5">
+          <div class="step-circle">5</div>
+          <div class="step-label">Ready to Share</div>
+        </div>
+      </div>
+
+      <div class="terminal-logs" id="terminalLogs">
+        <p>[00:00:00] Waiting for video submission...</p>
+      </div>
+    </section>
+
+    <!-- Results Section -->
+    <section class="results-section" id="resultsSection" style="display: none;">
+      <div class="section-header">
+        <h2>Generated Viral Shorts <span id="clipsCount" style="color: var(--accent-cyan); font-weight: 600;">(0)</span></h2>
+      </div>
+
+      <div class="clips-grid" id="clipsGrid">
+        <!-- Rendered clip cards injected here -->
+      </div>
+    </section>
+  </main>
+
+  <script src="/js/app.js"></script>
+</body>
+</html>
