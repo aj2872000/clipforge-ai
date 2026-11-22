@@ -27,6 +27,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const clipsCountSpan = document.getElementById("clipsCount");
 
   let activePollInterval = null;
+  let hasScrolledToResults = false;
   const renderedClipIds = new Set();
 
   // Toggle API key input visibility based on provider
@@ -102,6 +103,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   function startJobUI(initialTitle) {
+    hasScrolledToResults = false;
     renderedClipIds.clear();
     progressCard.style.display = "block";
     progressCard.scrollIntoView({ behavior: "smooth" });
@@ -134,9 +136,12 @@ document.addEventListener("DOMContentLoaded", () => {
   function pollJob(jobId) {
     if (activePollInterval) clearInterval(activePollInterval);
 
-    activePollInterval = setInterval(async () => {
+    const checkStatus = async () => {
       try {
-        const res = await fetch(`/api/jobs/${jobId}`);
+        const res = await fetch(`/api/jobs/${jobId}?_t=${Date.now()}`, {
+          cache: "no-store",
+          headers: { "Pragma": "no-cache", "Cache-Control": "no-cache" }
+        });
         if (!res.ok) return;
 
         const job = await res.json();
@@ -167,7 +172,9 @@ document.addEventListener("DOMContentLoaded", () => {
           clearInterval(activePollInterval);
           resetJobUI();
           updateStepper(5);
-          renderIncrementalResults(job.clips || [], false);
+          if (job.clips && job.clips.length > 0) {
+            renderIncrementalResults(job.clips, false);
+          }
         } else if (job.status === "failed") {
           clearInterval(activePollInterval);
           resetJobUI();
@@ -176,7 +183,10 @@ document.addEventListener("DOMContentLoaded", () => {
       } catch (err) {
         console.error("Poll error:", err);
       }
-    }, 1200);
+    };
+
+    checkStatus();
+    activePollInterval = setInterval(checkStatus, 1200);
   }
 
   function renderIncrementalResults(clips, isStillProcessing) {
@@ -189,9 +199,10 @@ document.addEventListener("DOMContentLoaded", () => {
       ? `(${completedCount}/${clips.length} ready — processing batch...)`
       : `(${completedCount})`;
 
-    // First time showing results: scroll down gently
-    if (clipsGrid.children.length === 0) {
+    // First time an individual clip finishes: gently scroll to show download button
+    if (completedCount >= 1 && !hasScrolledToResults) {
       resultsSection.scrollIntoView({ behavior: "smooth" });
+      hasScrolledToResults = true;
     }
 
     clips.forEach((clip) => {

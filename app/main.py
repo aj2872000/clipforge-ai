@@ -3,7 +3,7 @@ import uuid
 import asyncio
 import logging
 from typing import Dict, Any, List
-from fastapi import FastAPI, BackgroundTasks, HTTPException
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -66,7 +66,7 @@ def update_job(job_id: str, status: str, progress: int, step: str, message: str,
             logger.info(f"[{job_id}] {log}")
 
 @app.post("/api/analyze")
-async def analyze_video(req: AnalyzeRequest):
+def analyze_video(req: AnalyzeRequest):
     """Fetch video metadata and detect viral shorts clips."""
     video_id = extract_video_id(req.url)
     if not video_id:
@@ -108,7 +108,7 @@ async def analyze_video(req: AnalyzeRequest):
         logger.error(f"Error during video analysis: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-async def run_render_pipeline(
+def run_render_pipeline(
     job_id: str,
     url: str,
     video_id: str,
@@ -237,7 +237,7 @@ async def generate_all(req: GenerateAllRequest, background_tasks: BackgroundTask
         logs=[f"Initialized job {job_id} for {req.url}"]
     )
 
-    async def orchestrate():
+    def orchestrate():
         try:
             update_job(job_id, "analyzing", 10, "AI Analysis", "Curating viral moments & calculating hooks...", "Fetching transcripts and analyzing hooks...")
             segments, err_msg = fetch_transcript(
@@ -266,7 +266,7 @@ async def generate_all(req: GenerateAllRequest, background_tasks: BackgroundTask
 
             update_job(job_id, "analyzing", 20, "Clip Selection", f"Selected {len(candidates)} high-virality clips.", f"Selected clips: {[c.title for c in candidates]}")
 
-            await run_render_pipeline(
+            run_render_pipeline(
                 job_id=job_id,
                 url=req.url,
                 video_id=video_id,
@@ -310,8 +310,8 @@ async def render_single_clip(req: RenderClipRequest, background_tasks: Backgroun
         words=req.words or []
     )
 
-    async def render_task():
-        await run_render_pipeline(
+    def render_task():
+        run_render_pipeline(
             job_id=job_id,
             url=req.url,
             video_id=req.video_id,
@@ -323,10 +323,13 @@ async def render_single_clip(req: RenderClipRequest, background_tasks: Backgroun
     background_tasks.add_task(render_task)
     return {"job_id": job_id}
 
-@app.get("/api/jobs/{job_id}")
-async def get_job_status(job_id: str):
+@app.get("/api/jobs/{job_id}", response_model=JobStatus)
+async def get_job_status(job_id: str, response: Response):
     if job_id not in jobs:
         raise HTTPException(status_code=404, detail="Job not found.")
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
     return jobs[job_id]
 
 @app.get("/api/stream/{filename}")
@@ -367,7 +370,7 @@ async def generate_sample_demo(background_tasks: BackgroundTasks):
         logs=["Creating synthetic 16:9 test stream..."]
     )
 
-    async def create_demo():
+    def create_demo():
         demo_raw = os.path.join(DOWNLOADS_DIR, f"{job_id}_raw.mp4")
         demo_out = os.path.join(CLIPS_DIR, f"{job_id}.mp4")
 
