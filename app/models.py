@@ -35,6 +35,7 @@ class ClipCandidate(BaseModel):
     transcript: str
     words: Optional[List[TranscriptWord]] = []
     hashtags: Optional[List[str]] = []
+    applied_framing: Optional[str] = None
 
 class AnalyzeRequest(BaseModel):
     url: str
@@ -51,16 +52,27 @@ class RenderClipRequest(BaseModel):
     end_time: float
     title: str
     words: Optional[List[TranscriptWord]] = []
-    layout: Optional[str] = "blur_fill" # "blur_fill", "face_crop", "center_crop"
+    layout: Optional[str] = "auto" # "auto", "fill", "fit", "split", "screenshare", "center_crop"
     caption_style: Optional[str] = "hormozi" # "hormozi", "beast", "minimal", "neon"
     video_quality: Optional[str] = "max" # "max", "1080p", "720p"
     upscale_enabled: Optional[bool] = True
+
+class ReframeClipRequest(BaseModel):
+    clip_id: str
+    url: Optional[str] = ""
+    video_id: Optional[str] = ""
+    start_time: float
+    end_time: float
+    title: Optional[str] = "Short Clip"
+    words: Optional[List[TranscriptWord]] = []
+    layout: str = "auto" # "auto", "fill", "fit", "split", "screenshare", "center_crop"
+    caption_style: Optional[str] = "hormozi"
 
 class GenerateAllRequest(BaseModel):
     url: str
     target_duration: Optional[str] = "30-60"
     max_clips: Optional[int] = 3
-    layout: Optional[str] = "blur_fill"
+    layout: Optional[str] = "auto" # Default: auto (Smart AI)
     caption_style: Optional[str] = "hormozi"
     ai_provider: Optional[str] = "heuristic"
     api_key: Optional[str] = None
@@ -83,6 +95,10 @@ class ClipResponse(BaseModel):
     subtitles_url: Optional[str] = None
     hashtags: List[str] = []
     status: Optional[str] = "completed" # "queued", "rendering", "completed", "failed"
+    framing_mode: Optional[str] = "auto"
+    applied_framing: Optional[str] = "Auto • Fill"
+    url: Optional[str] = None
+    video_id: Optional[str] = None
 
 class JobStatus(BaseModel):
     job_id: str

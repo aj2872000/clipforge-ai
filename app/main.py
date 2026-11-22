@@ -1,8 +1,9 @@
 import os
 import uuid
+import time
 import asyncio
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
@@ -11,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.models import (
     AnalyzeRequest,
     RenderClipRequest,
+    ReframeClipRequest,
     GenerateAllRequest,
     ClipCandidate,
     ClipResponse,
@@ -190,33 +192,30 @@ def run_render_pipeline(
                 end_time=candidate.end_time
             )
 
-            # 2. Render 9:16 vertical short in Ultra-HD (1440p/4K)
+            # 2. Render 9:16 vertical short in Ultra-HD (1440p/4K) with Smart AI Framing
             final_clip_filename = f"{video_id}_{candidate.id}.mp4"
             final_clip_path = os.path.join(CLIPS_DIR, final_clip_filename)
 
-            processor.render_short_clip(
+            _, _, _, applied_badge = processor.render_short_clip(
                 source_video_path=actual_raw_path,
                 output_clip_path=final_clip_path,
                 words=candidate.words or [],
-                layout=layout,
+                layout=layout or "auto",
                 caption_style=caption_style,
                 clip_id=candidate.id,
                 start_time_offset=candidate.start_time
             )
 
-            # Clean up intermediate raw segment
-            if os.path.exists(actual_raw_path):
-                try:
-                    os.remove(actual_raw_path)
-                except Exception:
-                    pass
-
             # 3. Immediately mark THIS clip as completed and expose download & stream URLs!
             queue_clips[idx].status = "completed"
-            queue_clips[idx].video_url = f"/api/stream/{final_clip_filename}"
+            queue_clips[idx].video_url = f"/api/stream/{final_clip_filename}?_t={int(time.time())}"
             queue_clips[idx].download_url = f"/api/download/{final_clip_filename}"
-            queue_clips[idx].thumbnail_url = f"/api/stream/{os.path.splitext(final_clip_filename)[0]}.jpg"
+            queue_clips[idx].thumbnail_url = f"/api/stream/{os.path.splitext(final_clip_filename)[0]}.jpg?_t={int(time.time())}"
             queue_clips[idx].subtitles_url = f"/api/subtitle/{candidate.id}.srt"
+            queue_clips[idx].framing_mode = layout or "auto"
+            queue_clips[idx].applied_framing = applied_badge
+            queue_clips[idx].url = url
+            queue_clips[idx].video_id = video_id
 
             # Expose updated progressive list immediately in job state
             jobs[job_id].clips = list(queue_clips)
@@ -288,7 +287,7 @@ async def generate_all(req: GenerateAllRequest, background_tasks: BackgroundTask
                 url=req.url,
                 video_id=video_id,
                 candidates=candidates,
-                layout=req.layout or "blur_fill",
+                layout=req.layout or "auto",
                 caption_style=req.caption_style or "hormozi"
             )
         except Exception as e:
@@ -333,12 +332,94 @@ async def render_single_clip(req: RenderClipRequest, background_tasks: Backgroun
             url=req.url,
             video_id=req.video_id,
             candidates=[candidate],
-            layout=req.layout or "blur_fill",
+            layout=req.layout or "auto",
             caption_style=req.caption_style or "hormozi"
         )
 
     background_tasks.add_task(render_task)
     return {"job_id": job_id}
+
+reframe_tasks: Dict[str, Dict[str, Any]] = {}
+
+@app.post("/api/reframe-clip")
+async def reframe_clip_endpoint(req: ReframeClipRequest, background_tasks: BackgroundTasks):
+    """Re-render an individual clip with a forced manual override (Fill, Fit, Split, Screenshare) or Auto."""
+    task_id = str(uuid.uuid4())[:8]
+    reframe_tasks[task_id] = {
+        "status": "rendering",
+        "clip_id": req.clip_id,
+        "message": f"Re-framing clip with {req.layout.upper()}...",
+        "clip": None,
+        "error": None
+    }
+
+    def do_reframe():
+        try:
+            logger.info(f"Reframe task {task_id} started for clip {req.clip_id} with layout={req.layout}")
+            raw_path = os.path.join(DOWNLOADS_DIR, f"{req.video_id}_{req.clip_id}_raw.mp4")
+
+            # If raw segment was cleaned up or missing, fetch it directly
+            if not os.path.exists(raw_path):
+                if not req.url:
+                    raise RuntimeError("Source URL missing to re-download segment.")
+                logger.info(f"Re-fetching raw video segment for reframe: {req.start_time}s - {req.end_time}s")
+                raw_path = download_video_segment(
+                    url=req.url,
+                    output_path=raw_path,
+                    start_time=req.start_time,
+                    end_time=req.end_time
+                )
+
+            final_clip_filename = f"{req.video_id}_{req.clip_id}.mp4"
+            final_clip_path = os.path.join(CLIPS_DIR, final_clip_filename)
+
+            _, _, _, applied_badge = processor.render_short_clip(
+                source_video_path=raw_path,
+                output_clip_path=final_clip_path,
+                words=req.words or [],
+                layout=req.layout,
+                caption_style=req.caption_style or "hormozi",
+                clip_id=req.clip_id,
+                start_time_offset=req.start_time
+            )
+
+            updated_clip = ClipResponse(
+                id=req.clip_id,
+                title=req.title or "Short Clip",
+                virality_score=95,
+                hook=req.title or "",
+                explanation=f"Re-framed with {req.layout.capitalize()}.",
+                duration=req.end_time - req.start_time,
+                start_time=req.start_time,
+                end_time=req.end_time,
+                video_url=f"/api/stream/{final_clip_filename}?_t={int(time.time())}",
+                download_url=f"/api/download/{final_clip_filename}",
+                thumbnail_url=f"/api/stream/{os.path.splitext(final_clip_filename)[0]}.jpg?_t={int(time.time())}",
+                subtitles_url=f"/api/subtitle/{req.clip_id}.srt",
+                status="completed",
+                framing_mode=req.layout,
+                applied_framing=applied_badge,
+                url=req.url,
+                video_id=req.video_id
+            )
+
+            reframe_tasks[task_id]["status"] = "completed"
+            reframe_tasks[task_id]["clip"] = updated_clip.dict()
+            reframe_tasks[task_id]["message"] = f"Clip successfully re-framed to {applied_badge}!"
+            logger.info(f"Reframe task {task_id} finished successfully: {applied_badge}")
+        except Exception as e:
+            logger.error(f"Reframe error for task {task_id}: {e}", exc_info=True)
+            reframe_tasks[task_id]["status"] = "failed"
+            reframe_tasks[task_id]["error"] = str(e)
+
+    background_tasks.add_task(do_reframe)
+    return {"task_id": task_id, "status": "rendering"}
+
+@app.get("/api/reframe-status/{task_id}")
+def get_reframe_status_endpoint(task_id: str):
+    if task_id not in reframe_tasks:
+        raise HTTPException(status_code=404, detail="Reframe task not found")
+    return reframe_tasks[task_id]
 
 @app.get("/api/config")
 def get_config():
@@ -453,11 +534,11 @@ async def generate_sample_demo(background_tasks: BackgroundTasks):
 
         update_job(job_id, "rendering", 70, "Rendering 9:16", "Burning Hormozi captions & 9:16 blur framing...", "Rendering demo video...")
 
-        processor.render_short_clip(
+        _, _, _, demo_badge = processor.render_short_clip(
             source_video_path=demo_raw,
             output_clip_path=demo_out,
             words=words_objs,
-            layout="blur_fill",
+            layout="auto",
             caption_style="hormozi",
             clip_id=job_id,
             start_time_offset=0.0
@@ -482,7 +563,9 @@ async def generate_sample_demo(background_tasks: BackgroundTasks):
             download_url=f"/api/download/{job_id}.mp4",
             thumbnail_url=f"/api/stream/{job_id}.jpg",
             subtitles_url=f"/api/subtitle/{job_id}.srt",
-            hashtags=["#shorts", "#opusclip", "#viral", "#videoediting", "#ai"]
+            hashtags=["#shorts", "#opusclip", "#viral", "#videoediting", "#ai"],
+            framing_mode="auto",
+            applied_framing=demo_badge or "Auto • Fill"
         )]
 
         update_job(job_id, "completed", 100, "Done", "Demo short generated successfully!", "Demo complete.")

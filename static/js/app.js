@@ -365,6 +365,14 @@ document.addEventListener("DOMContentLoaded", () => {
               📋
             </button>
           </div>
+
+          ${isCompleted ? `
+            <div class="framing-badge-row">
+              <span class="framing-pill" title="Framing Mode Applied">
+                🎬 ${escapeHtml(clip.applied_framing || 'Auto • Smart Framing')}
+              </span>
+            </div>
+          ` : ""}
           
           <div class="hook-box">
             <div class="hook-label">Hook & Retention Trigger</div>
@@ -380,6 +388,32 @@ document.addEventListener("DOMContentLoaded", () => {
           <div class="clip-actions" id="clip-actions-${clip.id}">
             ${actionButtons}
           </div>
+
+          ${isCompleted ? `
+            <div class="reframe-box" id="reframe-box-${clip.id}">
+              <div class="reframe-header">
+                <span>⚙ Manual Framing Override</span>
+              </div>
+              <div class="reframe-controls">
+                <select class="reframe-select" id="reframe-select-${clip.id}">
+                  <option value="fill" ${clip.framing_mode === 'fill' ? 'selected' : ''}>Fill (Single Speaker)</option>
+                  <option value="fit" ${clip.framing_mode === 'fit' ? 'selected' : ''}>Fit (Blurred Canvas)</option>
+                  <option value="split" ${clip.framing_mode === 'split' ? 'selected' : ''}>Split (Two Speakers)</option>
+                  <option value="screenshare" ${clip.framing_mode === 'screenshare' ? 'selected' : ''}>Screenshare / Gameplay</option>
+                  <option value="auto" ${clip.framing_mode === 'auto' ? 'selected' : ''}>Auto (Smart AI Framing)</option>
+                </select>
+                <button 
+                  type="button" 
+                  class="btn-reframe" 
+                  id="reframe-btn-${clip.id}"
+                  onclick="triggerReframe('${clip.id}', '${escapeQuotes(clip.title)}', ${clip.start_time}, ${clip.end_time}, '${escapeQuotes(clip.url || '')}', '${escapeQuotes(clip.video_id || '')}')"
+                  title="Re-render this clip with selected framing layout"
+                >
+                  <span>⚡ Re-render</span>
+                </button>
+              </div>
+            </div>
+          ` : ""}
         </div>
       </div>
     `;
@@ -389,6 +423,91 @@ document.addEventListener("DOMContentLoaded", () => {
     navigator.clipboard.writeText(text).then(() => {
       alert("Title copied to clipboard!");
     });
+  };
+
+  window.triggerReframe = async function(clipId, title, startTime, endTime, url, videoId) {
+    const selectElem = document.getElementById(`reframe-select-${clipId}`);
+    const btnElem = document.getElementById(`reframe-btn-${clipId}`);
+    const cardElem = document.getElementById(`clip-card-${clipId}`);
+    const chosenLayout = selectElem ? selectElem.value : "auto";
+
+    const activeUrl = url || (document.getElementById("urlInput") ? document.getElementById("urlInput").value.trim() : "");
+    const activeVideoId = videoId || "";
+    const activeCaptionStyle = document.getElementById("captionStyle") ? document.getElementById("captionStyle").value : "hormozi";
+
+    if (!activeUrl) {
+      alert("Source video URL not found. Please ensure URL is entered in the main bar.");
+      return;
+    }
+
+    if (btnElem) {
+      btnElem.disabled = true;
+      btnElem.innerHTML = `<span class="spinner" style="width:12px;height:12px;border-width:1.5px;"></span> Rendering...`;
+    }
+
+    const videoContainer = cardElem ? cardElem.querySelector(".video-container") : null;
+    let existingPlayer = videoContainer ? videoContainer.querySelector(".video-player") : null;
+    if (existingPlayer) {
+      existingPlayer.style.opacity = "0.4";
+    }
+
+    try {
+      const res = await fetch("/api/reframe-clip", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clip_id: clipId,
+          url: activeUrl,
+          video_id: activeVideoId,
+          start_time: startTime,
+          end_time: endTime,
+          title: title,
+          layout: chosenLayout,
+          caption_style: activeCaptionStyle
+        })
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Reframe request failed");
+      }
+
+      const data = await res.json();
+      const taskId = data.task_id;
+
+      const pollInterval = setInterval(async () => {
+        try {
+          const sRes = await fetch(`/api/reframe-status/${taskId}`);
+          if (!sRes.ok) return;
+          const sData = await sRes.json();
+
+          if (sData.status === "completed") {
+            clearInterval(pollInterval);
+            if (sData.clip && cardElem) {
+              cardElem.outerHTML = createClipCard(sData.clip);
+            }
+          } else if (sData.status === "failed") {
+            clearInterval(pollInterval);
+            if (btnElem) {
+              btnElem.disabled = false;
+              btnElem.innerHTML = `<span>⚡ Re-render</span>`;
+            }
+            if (existingPlayer) existingPlayer.style.opacity = "1";
+            alert("Reframe failed: " + (sData.error || "Unknown error"));
+          }
+        } catch (pollErr) {
+          console.error("Reframe polling error:", pollErr);
+        }
+      }, 1200);
+
+    } catch (err) {
+      if (btnElem) {
+        btnElem.disabled = false;
+        btnElem.innerHTML = `<span>⚡ Re-render</span>`;
+      }
+      if (existingPlayer) existingPlayer.style.opacity = "1";
+      alert("Error initiating re-frame: " + err.message);
+    }
   };
 
   function escapeHtml(text) {
