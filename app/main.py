@@ -30,6 +30,23 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(na
 logger = logging.getLogger("shorts_creator")
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+def load_env_file():
+    env_path = os.path.join(BASE_DIR, ".env")
+    if os.path.exists(env_path):
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        k, v = k.strip(), v.strip().strip('"').strip("'")
+                        if k and v and k not in os.environ:
+                            os.environ[k] = v
+        except Exception as e:
+            logger.warning(f"Could not load .env file: {e}")
+
+load_env_file()
 STORAGE_DIR = os.path.join(BASE_DIR, "storage")
 CLIPS_DIR = os.path.join(STORAGE_DIR, "clips")
 DOWNLOADS_DIR = os.path.join(STORAGE_DIR, "downloads")
@@ -95,7 +112,7 @@ def analyze_video(req: AnalyzeRequest):
             segments=segments,
             target_duration=req.target_duration or "30-60",
             max_clips=req.max_clips or 3,
-            provider=req.ai_provider or "heuristic",
+            provider=req.ai_provider or "gemini",
             api_key=req.api_key
         )
 
@@ -257,7 +274,7 @@ async def generate_all(req: GenerateAllRequest, background_tasks: BackgroundTask
                 segments=segments,
                 target_duration=req.target_duration or "30-60",
                 max_clips=req.max_clips or 3,
-                provider=req.ai_provider or "heuristic",
+                provider=req.ai_provider or "gemini",
                 api_key=req.api_key
             )
 
@@ -322,6 +339,42 @@ async def render_single_clip(req: RenderClipRequest, background_tasks: Backgroun
 
     background_tasks.add_task(render_task)
     return {"job_id": job_id}
+
+@app.get("/api/config")
+def get_config():
+    gemini_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    has_key = bool(gemini_key and len(gemini_key.strip()) > 5)
+    return {
+        "has_gemini_key": has_key,
+        "default_provider": "gemini"
+    }
+
+@app.post("/api/config/key")
+def save_api_key(payload: Dict[str, str]):
+    key = payload.get("gemini_api_key", "").strip()
+    if key:
+        os.environ["GEMINI_API_KEY"] = key
+        # Persist to .env file
+        env_path = os.path.join(BASE_DIR, ".env")
+        try:
+            lines = []
+            key_set = False
+            if os.path.exists(env_path):
+                with open(env_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        if line.strip().startswith("GEMINI_API_KEY="):
+                            lines.append(f"GEMINI_API_KEY={key}\n")
+                            key_set = True
+                        else:
+                            lines.append(line)
+            if not key_set:
+                lines.append(f"GEMINI_API_KEY={key}\n")
+            with open(env_path, "w", encoding="utf-8") as f:
+                f.writelines(lines)
+            return {"status": "saved", "message": "Gemini API key saved to .env"}
+        except Exception as e:
+            return {"status": "memory_only", "message": f"Saved in session: {e}"}
+    return {"status": "error", "message": "Empty key"}
 
 @app.get("/api/jobs/{job_id}", response_model=JobStatus)
 async def get_job_status(job_id: str, response: Response):

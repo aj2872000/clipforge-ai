@@ -1,3 +1,4 @@
+import os
 import re
 import json
 import logging
@@ -203,72 +204,204 @@ def analyze_with_heuristics(
         
     return selected
 
-def analyze_with_llm(
+def get_gemini_api_key(explicit_key: Optional[str] = None) -> Optional[str]:
+    """Retrieve Gemini API key from explicit param, environment, or .env file."""
+    if explicit_key and explicit_key.strip():
+        return explicit_key.strip()
+    key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if key and key.strip():
+        return key.strip()
+    return None
+
+def analyze_with_gemini(
     segments: List[TranscriptSegment],
-    provider: str,
     api_key: str,
-    target_duration: str = "30-60",
+    target_duration_str: str = "30-60",
     max_clips: int = 3
 ) -> List[ClipCandidate]:
     """
-    Optional LLM integration (Gemini / OpenAI) for advanced contextual semantic virality curation.
+    Opus Clip-style AI curation powered by Google Gemini 2.0 / 1.5 Flash.
+    Analyzes the full semantic narrative arc, extracts the strongest viral hooks,
+    and returns exact timestamped boundaries with click-worthy titles and virality scores.
     """
-    # First get candidate windows via heuristics to bound the token count
-    heuristic_candidates = analyze_with_heuristics(segments, target_duration, max_clips=5)
-    if not heuristic_candidates:
-        return []
-        
-    if provider.lower() == "gemini":
-        try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
-            prompt = f"""You are an expert viral shorts editor (like Opus Clip).
-Review these {len(heuristic_candidates)} candidate clips from a video transcript:
-{json.dumps([{"id": c.id, "start": c.start_time, "end": c.end_time, "text": c.transcript} for c in heuristic_candidates], indent=2)}
+    all_words: List[TranscriptWord] = []
+    for s in segments:
+        all_words.extend(s.words)
 
-Select and refine the TOP {max_clips} clips that will perform best on YouTube Shorts / TikTok.
-For each clip, return JSON:
+    if not all_words:
+        return []
+
+    total_duration = all_words[-1].end - all_words[0].start
+    logger.info(f"Analyzing {len(all_words)} words across {total_duration:.1f}s with Google Gemini AI...")
+
+    # Determine duration constraints
+    min_dur, max_dur = 28.0, 60.0
+    if target_duration_str == "15-30":
+        min_dur, max_dur = 15.0, 32.0
+    elif target_duration_str == "30-60":
+        min_dur, max_dur = 28.0, 62.0
+    elif target_duration_str == "60-90":
+        min_dur, max_dur = 55.0, 92.0
+
+    # Build a condensed timestamped transcript
+    formatted_blocks = []
+    curr_block_words = []
+    block_start = all_words[0].start
+
+    for w in all_words:
+        curr_block_words.append(w.word)
+        if w.end - block_start >= 18.0 and any(w.word.endswith(p) for p in [".", "!", "?", ","]):
+            m = int(block_start // 60)
+            sec = int(block_start % 60)
+            text = " ".join(curr_block_words)
+            formatted_blocks.append(f"[{m:02d}:{sec:02d}] ({block_start:.1f}s - {w.end:.1f}s): {text}")
+            curr_block_words = []
+            block_start = w.end
+
+    if curr_block_words:
+        m = int(block_start // 60)
+        sec = int(block_start % 60)
+        text = " ".join(curr_block_words)
+        formatted_blocks.append(f"[{m:02d}:{sec:02d}] ({block_start:.1f}s - {all_words[-1].end:.1f}s): {text}")
+
+    # For extremely long transcripts (> 600 blocks / ~3 hours), sample evenly to avoid hitting payload limits
+    if len(formatted_blocks) > 600:
+        step = len(formatted_blocks) // 500
+        formatted_blocks = formatted_blocks[::max(1, step)]
+
+    transcript_text = "\n".join(formatted_blocks)
+
+    prompt = f"""You are an elite short-form video editor and algorithm strategist (modeled after Opus Clip).
+Your task is to analyze this timestamped video transcript and select the TOP {max_clips} most viral, high-retention clips for YouTube Shorts and TikTok.
+
+TARGET DURATION: {target_duration_str} seconds (strictly between {min_dur:.0f}s and {max_dur:.0f}s each).
+
+CORE OPUS CLIP CURATION RULES:
+1. THE 3-SECOND HOOK: Every clip MUST start on a high-retention trigger (a provocative question, shocking fact, contrarian view, or curiosity gap).
+2. COHESIVE STORY/VALUE: The clip must be a complete, self-contained thought or story that leaves the viewer satisfied or amazed.
+3. CLEAN SPEECH EDGES: Start cleanly at the beginning of a sentence. End cleanly at a full stop or punchline. NEVER cut off mid-sentence.
+4. DIVERSE SELECTION: Choose clips from different distinct segments of the video.
+5. CLICK-WORTHY TITLES: Generate captivating titles under 50 characters in Title Case. Do NOT include hashtags or quotes in the title.
+6. OPUS METRICS: Provide realistic Virality Score (80-99), Hook Score (80-99), and Flow Score (80-99) with an explanation of why it will captivate audiences.
+
+TIMESTAMPED TRANSCRIPT:
+{transcript_text}
+
+OUTPUT FORMAT:
+Return a JSON array containing exactly {max_clips} objects:
 [
   {{
-    "id": "original_id",
-    "title": "Ultra-clickable short title (under 50 chars, no hashtags)",
-    "virality_score": 95, // 0 to 100
-    "hook": "Opening hook explanation",
-    "explanation": "Why this clip will captivate audience retention"
+    "start_time": 12.5,
+    "end_time": 45.2,
+    "title": "The Brutal Truth About Success",
+    "hook": "Most people fail because they focus on motivation instead of discipline.",
+    "virality_score": 96,
+    "hook_score": 98,
+    "flow_score": 94,
+    "explanation": "Immediate contrarian hook that challenges common belief, followed by rapid, actionable value with high emotional resonance.",
+    "hashtags": ["#shorts", "#success", "#mindset", "#viral", "#motivation"]
   }}
-]
-Return ONLY raw JSON list, no markdown fences."""
-            
-            resp = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=15)
+]"""
+
+    models_to_try = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash"]
+    raw_json_str = None
+
+    for model_name in models_to_try:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "temperature": 0.2,
+                    "responseMimeType": "application/json"
+                }
+            }
+            logger.info(f"Sending transcript to Google Gemini ({model_name})...")
+            resp = requests.post(url, json=payload, timeout=25)
             if resp.status_code == 200:
-                content = resp.json()['candidates'][0]['content']['parts'][0]['text']
-                clean_json = re.sub(r'^```json\s*|\s*```$', '', content.strip())
-                data = json.loads(clean_json)
-                
-                # Merge LLM titles & scores into candidates
-                id_map = {item["id"]: item for item in data}
-                for c in heuristic_candidates:
-                    if c.id in id_map:
-                        item = id_map[c.id]
-                        c.title = item.get("title", c.title)
-                        c.virality_score = item.get("virality_score", c.virality_score)
-                        c.explanation = item.get("explanation", c.explanation)
-                        c.hook = item.get("hook", c.hook)
-                        
-                heuristic_candidates.sort(key=lambda x: x.virality_score, reverse=True)
-                return heuristic_candidates[:max_clips]
-        except Exception as e:
-            logger.warning(f"Gemini analysis error: {e}. Defaulting to heuristic scoring.")
-            
-    return heuristic_candidates[:max_clips]
+                data = resp.json()
+                raw_json_str = data['candidates'][0]['content']['parts'][0]['text']
+                logger.info(f"Successfully received Opus Clip curation from Gemini ({model_name})!")
+                break
+            else:
+                logger.warning(f"Gemini model {model_name} returned status {resp.status_code}: {resp.text[:200]}")
+        except Exception as ex:
+            logger.warning(f"Gemini {model_name} request error: {ex}")
+
+    if not raw_json_str:
+        raise RuntimeError("Could not retrieve AI response from Gemini API models.")
+
+    clean_json = re.sub(r'^```json\s*|\s*```$', '', raw_json_str.strip())
+    clip_items = json.loads(clean_json)
+
+    candidates: List[ClipCandidate] = []
+    for idx, item in enumerate(clip_items):
+        req_start = float(item["start_time"])
+        req_end = float(item["end_time"])
+
+        # Snap to exact word timestamps
+        matching_words = [w for w in all_words if w.start >= req_start - 0.5 and w.end <= req_end + 0.5]
+        if not matching_words:
+            matching_words = [w for w in all_words if (w.start + w.end) / 2 >= req_start and (w.start + w.end) / 2 <= req_end]
+
+        if matching_words:
+            act_start = matching_words[0].start
+            act_end = matching_words[-1].end
+            duration = act_end - act_start
+            transcript = " ".join([w.word for w in matching_words])
+        else:
+            act_start = req_start
+            act_end = req_end
+            duration = req_end - req_start
+            transcript = item.get("hook", "")
+            matching_words = []
+
+        candidates.append(ClipCandidate(
+            id=f"clip_gemini_{idx+1}_{int(act_start)}",
+            title=item.get("title", f"Viral Moment #{idx+1}"),
+            hook=item.get("hook", transcript[:90] + "..."),
+            explanation=item.get("explanation", "Curated by Google Gemini AI with high retention structure."),
+            virality_score=int(item.get("virality_score", 92)),
+            hook_score=int(item.get("hook_score", 90)),
+            flow_score=int(item.get("flow_score", 90)),
+            start_time=round(act_start, 2),
+            end_time=round(act_end, 2),
+            duration=round(duration, 2),
+            transcript=transcript,
+            words=matching_words,
+            hashtags=item.get("hashtags") or ["#shorts", "#viral", "#foryou"]
+        ))
+
+    candidates.sort(key=lambda c: c.virality_score, reverse=True)
+    return candidates[:max_clips]
 
 def detect_clips(
     segments: List[TranscriptSegment],
     target_duration: str = "30-60",
     max_clips: int = 3,
-    provider: str = "heuristic",
+    provider: str = "gemini",
     api_key: Optional[str] = None
 ) -> List[ClipCandidate]:
-    """Main clip detection orchestrator."""
-    if provider in ["gemini", "openai"] and api_key:
-        return analyze_with_llm(segments, provider, api_key, target_duration, max_clips)
+    """
+    Main clip detection orchestrator.
+    Defaults to Google Gemini AI (Opus Clip Engine) when an API key is available.
+    """
+    resolved_key = get_gemini_api_key(api_key)
+
+    if provider.lower() == "gemini":
+        if resolved_key:
+            try:
+                candidates = analyze_with_gemini(
+                    segments=segments,
+                    api_key=resolved_key,
+                    target_duration_str=target_duration,
+                    max_clips=max_clips
+                )
+                if candidates:
+                    return candidates
+            except Exception as e:
+                logger.error(f"Gemini Opus Clip curation error: {e}. Falling back to enhanced heuristic analysis.", exc_info=True)
+        else:
+            logger.info("Gemini AI selected, but no API key configured. Set GEMINI_API_KEY in .env or the UI. Falling back to heuristic analysis.")
+
     return analyze_with_heuristics(segments, target_duration, max_clips)

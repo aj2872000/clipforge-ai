@@ -92,15 +92,38 @@
           <div class="option-item">
             <label for="aiProvider">AI Virality Engine</label>
             <select id="aiProvider" class="select-custom">
-              <option value="heuristic" selected>Built-in AI (Instant / No Key)</option>
-              <option value="gemini">Google Gemini 2.0</option>
+              <option value="gemini" selected>Google Gemini 2.0 (Opus Clip Engine)</option>
+              <option value="heuristic">Built-in Heuristic (No Key)</option>
               <option value="openai">OpenAI GPT-4o</option>
             </select>
           </div>
 
-          <div class="option-item" id="apiKeyWrapper" style="display: none;">
-            <label for="apiKeyInput">Gemini / OpenAI Key</label>
-            <input type="password" id="apiKeyInput" class="select-custom" placeholder="Paste API Key (enables Audio STT)">
+          <div class="option-item" id="apiKeyWrapper">
+            <label for="apiKeyInput" style="display: flex; align-items: center; justify-content: space-between;">
+              <span>Gemini API Key</span>
+              <span id="keyStatusBadge" style="font-size: 11px; padding: 2px 7px; border-radius: 4px; background: rgba(52, 211, 153, 0.2); color: #34d399; font-weight: 600; display: none;">✓ Saved in .env</span>
+            </label>
+            <div style="display: flex; gap: 8px;">
+              <input 
+                type="password" 
+                id="apiKeyInput" 
+                class="select-custom" 
+                placeholder="Paste Gemini API Key (or set in .env)" 
+                style="flex: 1;"
+              >
+              <button 
+                type="button" 
+                id="saveKeyBtn" 
+                class="btn btn-secondary" 
+                style="padding: 0 12px; font-size: 13px; font-weight: 600; white-space: nowrap; cursor: pointer;"
+                title="Save API Key to .env"
+              >
+                💾 Save
+              </button>
+            </div>
+            <div style="font-size: 11px; color: #94a3b8; margin-top: 5px;">
+              Free with your Google Account at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" style="color: #818cf8; text-decoration: underline;">Google AI Studio</a>.
+            </div>
           </div>
         </div>
 

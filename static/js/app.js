@@ -30,6 +30,64 @@ document.addEventListener("DOMContentLoaded", () => {
   let hasScrolledToResults = false;
   const renderedClipIds = new Set();
 
+  const keyStatusBadge = document.getElementById("keyStatusBadge");
+  const saveKeyBtn = document.getElementById("saveKeyBtn");
+
+  // Load saved key from localStorage if available
+  const storedGeminiKey = localStorage.getItem("gemini_api_key");
+  if (storedGeminiKey && apiKeyInput) {
+    apiKeyInput.value = storedGeminiKey;
+  }
+
+  // Check if Gemini API key is configured on server via .env
+  fetch("/api/config")
+    .then((r) => r.json())
+    .then((data) => {
+      if (data.has_gemini_key) {
+        if (keyStatusBadge) {
+          keyStatusBadge.style.display = "inline-block";
+          keyStatusBadge.innerText = "✓ Configured (.env)";
+        }
+        if (apiKeyInput && !apiKeyInput.value) {
+          apiKeyInput.placeholder = "●●●●●●●● (Loaded from .env)";
+        }
+      }
+    })
+    .catch(() => {});
+
+  // Handle Save API Key button click
+  if (saveKeyBtn && apiKeyInput) {
+    saveKeyBtn.addEventListener("click", async () => {
+      const keyVal = apiKeyInput.value.trim();
+      if (!keyVal) {
+        alert("Please paste your Google Gemini API key first.");
+        return;
+      }
+      try {
+        saveKeyBtn.disabled = true;
+        saveKeyBtn.innerText = "Saving...";
+        const res = await fetch("/api/config/key", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ gemini_api_key: keyVal })
+        });
+        const result = await res.json();
+        localStorage.setItem("gemini_api_key", keyVal);
+        if (keyStatusBadge) {
+          keyStatusBadge.style.display = "inline-block";
+          keyStatusBadge.innerText = "✓ Saved";
+        }
+        alert("Gemini API Key successfully saved to .env!");
+      } catch (e) {
+        localStorage.setItem("gemini_api_key", keyVal);
+        alert("Saved key to browser storage.");
+      } finally {
+        saveKeyBtn.disabled = false;
+        saveKeyBtn.innerText = "💾 Save";
+      }
+    });
+  }
+
   // Toggle API key input visibility based on provider
   if (aiProvider) {
     aiProvider.addEventListener("change", () => {
@@ -72,7 +130,7 @@ document.addEventListener("DOMContentLoaded", () => {
       layout: layoutSelect.value,
       caption_style: captionStyle.value,
       ai_provider: aiProvider.value,
-      api_key: apiKeyInput ? apiKeyInput.value.trim() : null,
+      api_key: (apiKeyInput && apiKeyInput.value.trim()) || localStorage.getItem("gemini_api_key") || null,
       custom_transcript: customTranscript ? customTranscript.value.trim() : null
     };
 
