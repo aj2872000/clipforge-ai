@@ -238,14 +238,15 @@ class VideoProcessor:
         layout: str = "auto",
         caption_style: str = "hormozi",
         clip_id: str = "clip",
-        start_time_offset: float = 0.0
+        start_time_offset: float = 0.0,
+        force_4k: bool = False
     ) -> Tuple[str, str, str, str]:
         """
         Smart AI Framing & High-Performance 9:16 Shorts Rendering Pipeline:
         - Auto Mode: 4-stage pipeline (Scene cut detection -> Per-scene face classification [Fit/Fill/Split] ->
           Segment rendering -> Seamless concat with continuous audio & karaoke subtitles)
         - Manual Mode: Forced override (Fill, Fit, Split, Screenshare, Center Crop)
-        - Strictly enforces minimum resolution of 1080x1920 (or 1440p/4K if source is higher)
+        - Strictly enforces minimum resolution of 1080x1920 (or 1440p/4K if source is higher or force_4k is True)
         - Zero audio clicks or drift across layout transitions
         Returns: (output_clip_path, thumb_path, srt_path, applied_framing_badge)
         """
@@ -272,8 +273,8 @@ class VideoProcessor:
         except Exception as e:
             logger.warning(f"Error probing video parameters: {e}")
 
-        # Enforce minimum 1080p, scaling to 1440p or 4K if source matches
-        if src_h >= 2160 or src_w >= 3840:
+        # Enforce minimum 1080p, scaling to 1440p or 4K if source matches or force_4k
+        if force_4k or src_h >= 2160 or src_w >= 3840:
             target_w, target_h = 2160, 3840
             res_label = "4K UHD (2160x3840)"
         elif src_h >= 1440 or src_w >= 2560:
@@ -533,3 +534,54 @@ class VideoProcessor:
         subprocess.run(thumb_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
         return output_clip_path, thumb_path, srt_path, applied_badge
+
+    def upscale_to_4k(
+        self,
+        input_clip_path: str,
+        output_4k_path: str
+    ) -> Tuple[str, str]:
+        """
+        Direct 4K UHD Upscaling Engine:
+        Upscales an already-rendered 1080p/1440p short to 2160x3840 using
+        high-fidelity Lanczos resampling + CAS / adaptive edge sharpening + CRF 15 high-bitrate encoding.
+        Returns: (output_4k_path, thumb_4k_path)
+        """
+        os.makedirs(os.path.dirname(output_4k_path), exist_ok=True)
+        thumb_4k = os.path.splitext(output_4k_path)[0] + ".jpg"
+
+        sharpen = "cas=0.5" if self.has_cas else "unsharp=5:5:0.5:5:5:0.2"
+        filter_str = f"scale=2160:3840:flags=lanczos+accurate_rnd+full_chroma_int,{sharpen}"
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", input_clip_path,
+            "-vf", filter_str,
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "15",
+            "-maxrate", "80M",
+            "-bufsize", "160M",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "copy",
+            "-movflags", "+faststart",
+            output_4k_path
+        ]
+
+        logger.info(f"Upscaling clip {os.path.basename(input_clip_path)} to 4K UHD (2160x3840)...")
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if res.returncode != 0:
+            logger.error(f"4K upscale failed: {res.stderr}")
+            raise RuntimeError(f"4K upscale failed: {res.stderr[-300:]}")
+
+        # Extract 4K poster thumbnail
+        thumb_cmd = [
+            "ffmpeg", "-y",
+            "-ss", "00:00:01",
+            "-i", output_4k_path,
+            "-vframes", "1",
+            "-q:v", "2",
+            thumb_4k
+        ]
+        subprocess.run(thumb_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        return output_4k_path, thumb_4k

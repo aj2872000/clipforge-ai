@@ -13,6 +13,7 @@ from app.models import (
     AnalyzeRequest,
     RenderClipRequest,
     ReframeClipRequest,
+    Upscale4KRequest,
     GenerateAllRequest,
     ClipCandidate,
     ClipResponse,
@@ -420,6 +421,109 @@ def get_reframe_status_endpoint(task_id: str):
     if task_id not in reframe_tasks:
         raise HTTPException(status_code=404, detail="Reframe task not found")
     return reframe_tasks[task_id]
+
+upscale_tasks: Dict[str, Dict[str, Any]] = {}
+
+@app.post("/api/upscale-4k")
+async def upscale_4k_endpoint(req: Upscale4KRequest, background_tasks: BackgroundTasks):
+    """Further upscale an individual clip to 4K UHD (2160x3840) with Lanczos & adaptive sharpening."""
+    task_id = str(uuid.uuid4())[:8]
+    upscale_tasks[task_id] = {
+        "status": "processing",
+        "clip_id": req.clip_id,
+        "message": "Upscaling clip to 4K Ultra-HD (2160x3840)...",
+        "clip": None,
+        "error": None
+    }
+
+    def do_upscale():
+        try:
+            logger.info(f"4K upscale task {task_id} initiated for clip {req.clip_id}")
+            raw_path = os.path.join(DOWNLOADS_DIR, f"{req.video_id}_{req.clip_id}_raw.mp4")
+            existing_clip_path = os.path.join(CLIPS_DIR, f"{req.video_id}_{req.clip_id}.mp4")
+            out_4k_filename = f"{req.video_id}_{req.clip_id}_4k.mp4"
+            out_4k_path = os.path.join(CLIPS_DIR, out_4k_filename)
+
+            applied_badge = "💎 4K UHD (2160x3840)"
+
+            if os.path.exists(raw_path):
+                logger.info(f"Native 4K rendering from raw source for clip {req.clip_id}...")
+                _, thumb_path, srt_path, framing_badge = processor.render_short_clip(
+                    source_video_path=raw_path,
+                    output_clip_path=out_4k_path,
+                    words=[],
+                    layout=req.layout or "auto",
+                    caption_style=req.caption_style or "hormozi",
+                    clip_id=req.clip_id,
+                    start_time_offset=req.start_time,
+                    force_4k=True
+                )
+                applied_badge = f"{framing_badge} • 4K UHD"
+            elif os.path.exists(existing_clip_path):
+                logger.info(f"Direct 4K Lanczos upscaling from rendered clip for {req.clip_id}...")
+                processor.upscale_to_4k(existing_clip_path, out_4k_path)
+            elif req.url:
+                logger.info(f"Downloading raw segment to render 4K for {req.clip_id}...")
+                raw_path = download_video_segment(
+                    url=req.url,
+                    output_path=raw_path,
+                    start_time=req.start_time,
+                    end_time=req.end_time
+                )
+                _, thumb_path, srt_path, framing_badge = processor.render_short_clip(
+                    source_video_path=raw_path,
+                    output_clip_path=out_4k_path,
+                    words=[],
+                    layout=req.layout or "auto",
+                    caption_style=req.caption_style or "hormozi",
+                    clip_id=req.clip_id,
+                    start_time_offset=req.start_time,
+                    force_4k=True
+                )
+                applied_badge = f"{framing_badge} • 4K UHD"
+            else:
+                raise RuntimeError("No source video or existing clip found to upscale to 4K.")
+
+            duration = max(1.0, req.end_time - req.start_time)
+            updated_clip = ClipResponse(
+                id=req.clip_id,
+                title=req.title or "4K Short",
+                virality_score=99,
+                hook=req.title or "",
+                explanation="Enhanced to 4K Ultra-HD (2160x3840) with Lanczos sharpening.",
+                duration=duration,
+                start_time=req.start_time,
+                end_time=req.end_time,
+                video_url=f"/api/stream/{out_4k_filename}?_t={int(time.time())}",
+                download_url=f"/api/download/{out_4k_filename}",
+                thumbnail_url=f"/api/stream/{os.path.splitext(out_4k_filename)[0]}.jpg?_t={int(time.time())}",
+                subtitles_url=f"/api/subtitle/{req.clip_id}.srt",
+                status="completed",
+                framing_mode=req.layout or "auto",
+                applied_framing=applied_badge,
+                url=req.url,
+                video_id=req.video_id,
+                is_4k=True,
+                resolution="4K UHD (2160x3840)"
+            )
+
+            upscale_tasks[task_id]["status"] = "completed"
+            upscale_tasks[task_id]["clip"] = updated_clip.dict()
+            upscale_tasks[task_id]["message"] = "Clip upscaled to 4K UHD successfully!"
+            logger.info(f"4K upscale task {task_id} completed successfully for {req.clip_id}!")
+        except Exception as e:
+            logger.error(f"4K upscale error for task {task_id}: {e}", exc_info=True)
+            upscale_tasks[task_id]["status"] = "failed"
+            upscale_tasks[task_id]["error"] = str(e)
+
+    background_tasks.add_task(do_upscale)
+    return {"task_id": task_id, "status": "processing"}
+
+@app.get("/api/upscale-status/{task_id}")
+def get_upscale_status_endpoint(task_id: str):
+    if task_id not in upscale_tasks:
+        raise HTTPException(status_code=404, detail="Upscale task not found")
+    return upscale_tasks[task_id]
 
 @app.get("/api/config")
 def get_config():

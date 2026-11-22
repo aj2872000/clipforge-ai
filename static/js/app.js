@@ -302,8 +302,23 @@ document.addEventListener("DOMContentLoaded", () => {
       `;
       actionButtons = `
         <a href="${clip.download_url}" download class="btn btn-primary" style="display: inline-flex; align-items: center; justify-content: center; gap: 6px;">
-          <span>⬇ Download (Max Quality)</span>
+          <span>⬇ Download (${clip.is_4k ? '4K Ultra HD' : 'Max Quality'})</span>
         </a>
+        ${clip.is_4k ? `
+          <span class="btn-4k-ready" title="This clip is rendered in 4K Ultra-HD (2160x3840)">
+            <span>✓ 4K UHD</span>
+          </span>
+        ` : `
+          <button 
+            type="button" 
+            class="btn btn-4k-upscale" 
+            id="btn-4k-${clip.id}"
+            onclick="trigger4KUpscale('${clip.id}', '${escapeQuotes(clip.title)}', ${clip.start_time}, ${clip.end_time}, '${escapeQuotes(clip.url || '')}', '${escapeQuotes(clip.video_id || '')}', '${clip.framing_mode || 'auto'}')"
+            title="Upscale video to 4K Ultra-HD (2160x3840) with Lanczos & Adaptive Sharpening"
+          >
+            <span>💎 Upscale to 4K</span>
+          </button>
+        `}
         ${clip.subtitles_url ? `
           <a href="${clip.subtitles_url}" download class="btn btn-secondary" title="Download Subtitles">
             📄 SRT
@@ -371,6 +386,11 @@ document.addEventListener("DOMContentLoaded", () => {
               <span class="framing-pill" title="Framing Mode Applied">
                 🎬 ${escapeHtml(clip.applied_framing || 'Auto • Smart Framing')}
               </span>
+              ${clip.is_4k ? `
+                <span class="badge-4k" title="Ultra-HD 4K Resolution (2160x3840)">
+                  💎 4K UHD (2160x3840)
+                </span>
+              ` : ""}
             </div>
           ` : ""}
           
@@ -507,6 +527,84 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       if (existingPlayer) existingPlayer.style.opacity = "1";
       alert("Error initiating re-frame: " + err.message);
+    }
+  };
+
+  window.trigger4KUpscale = async function(clipId, title, startTime, endTime, url, videoId, layout) {
+    const btnElem = document.getElementById(`btn-4k-${clipId}`);
+    const cardElem = document.getElementById(`clip-card-${clipId}`);
+
+    const activeUrl = url || (document.getElementById("urlInput") ? document.getElementById("urlInput").value.trim() : "");
+    const activeVideoId = videoId || "";
+    const activeCaptionStyle = document.getElementById("captionStyle") ? document.getElementById("captionStyle").value : "hormozi";
+
+    if (btnElem) {
+      btnElem.disabled = true;
+      btnElem.innerHTML = `<span class="spinner" style="width:12px;height:12px;border-width:1.5px;"></span> Upscaling to 4K...`;
+    }
+
+    const videoContainer = cardElem ? cardElem.querySelector(".video-container") : null;
+    let existingPlayer = videoContainer ? videoContainer.querySelector(".video-player") : null;
+    if (existingPlayer) {
+      existingPlayer.style.opacity = "0.4";
+    }
+
+    try {
+      const res = await fetch("/api/upscale-4k", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clip_id: clipId,
+          url: activeUrl,
+          video_id: activeVideoId,
+          start_time: startTime,
+          end_time: endTime,
+          title: title,
+          layout: layout || "auto",
+          caption_style: activeCaptionStyle
+        })
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "4K upscale request failed");
+      }
+
+      const data = await res.json();
+      const taskId = data.task_id;
+
+      const pollInterval = setInterval(async () => {
+        try {
+          const sRes = await fetch(`/api/upscale-status/${taskId}`);
+          if (!sRes.ok) return;
+          const sData = await sRes.json();
+
+          if (sData.status === "completed") {
+            clearInterval(pollInterval);
+            if (sData.clip && cardElem) {
+              cardElem.outerHTML = createClipCard(sData.clip);
+            }
+          } else if (sData.status === "failed") {
+            clearInterval(pollInterval);
+            if (btnElem) {
+              btnElem.disabled = false;
+              btnElem.innerHTML = `<span>💎 Upscale to 4K</span>`;
+            }
+            if (existingPlayer) existingPlayer.style.opacity = "1";
+            alert("4K Upscale failed: " + (sData.error || "Unknown error"));
+          }
+        } catch (pollErr) {
+          console.error("4K polling error:", pollErr);
+        }
+      }, 1200);
+
+    } catch (err) {
+      if (btnElem) {
+        btnElem.disabled = false;
+        btnElem.innerHTML = `<span>💎 Upscale to 4K</span>`;
+      }
+      if (existingPlayer) existingPlayer.style.opacity = "1";
+      alert("Error starting 4K upscale: " + err.message);
     }
   };
 

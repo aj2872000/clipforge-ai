@@ -68,6 +68,16 @@ class ReframeClipRequest(BaseModel):
     layout: str = "auto" # "auto", "fill", "fit", "split", "screenshare", "center_crop"
     caption_style: Optional[str] = "hormozi"
 
+class Upscale4KRequest(BaseModel):
+    clip_id: str
+    video_id: Optional[str] = ""
+    url: Optional[str] = ""
+    start_time: float
+    end_time: float
+    title: Optional[str] = "4K Short"
+    layout: Optional[str] = "auto"
+    caption_style: Optional[str] = "hormozi"
+
 class GenerateAllRequest(BaseModel):
     url: str
     target_duration: Optional[str] = "30-60"
@@ -99,6 +109,8 @@ class ClipResponse(BaseModel):
     applied_framing: Optional[str] = "Auto • Fill"
     url: Optional[str] = None
     video_id: Optional[str] = None
+    is_4k: Optional[bool] = False
+    resolution: Optional[str] = None
 
 class JobStatus(BaseModel):
     job_id: str
