@@ -1,4 +1,5 @@
 import os
+import re
 import uuid
 import time
 import asyncio
@@ -18,7 +19,8 @@ from app.models import (
     ClipCandidate,
     ClipResponse,
     JobStatus,
-    VideoMetadata
+    VideoMetadata,
+    TranscriptWord
 )
 from app.transcriber import (
     extract_video_id,
@@ -70,6 +72,78 @@ app.add_middleware(
 )
 
 processor = VideoProcessor(base_dir=STORAGE_DIR)
+
+clip_words_cache: Dict[str, List[TranscriptWord]] = {}
+
+def parse_srt_to_words(srt_path: str) -> List[TranscriptWord]:
+    """Parse an existing SRT file into TranscriptWord objects."""
+    if not os.path.exists(srt_path):
+        return []
+    words: List[TranscriptWord] = []
+    try:
+        with open(srt_path, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+
+        blocks = re.split(r"\n\s*\n", content.strip())
+        for block in blocks:
+            lines = [l.strip() for l in block.split("\n") if l.strip()]
+            if len(lines) < 2:
+                continue
+
+            time_line = ""
+            text_lines = []
+            for line in lines:
+                if "-->" in line:
+                    time_line = line
+                elif not line.isdigit():
+                    text_lines.append(line)
+
+            if not time_line or not text_lines:
+                continue
+
+            parts = time_line.split("-->")
+            if len(parts) != 2:
+                continue
+
+            def parse_tc(tc_str: str) -> float:
+                tc = tc_str.strip().replace(",", ".")
+                t_parts = tc.split(":")
+                if len(t_parts) == 3:
+                    return float(t_parts[0]) * 3600.0 + float(t_parts[1]) * 60.0 + float(t_parts[2])
+                return 0.0
+
+            s_t = parse_tc(parts[0])
+            e_t = parse_tc(parts[1])
+            seg_text = " ".join(text_lines)
+            tokens = seg_text.split()
+            if not tokens:
+                continue
+
+            token_dur = max(0.1, (e_t - s_t) / len(tokens))
+            for i, tok in enumerate(tokens):
+                w_start = s_t + (i * token_dur)
+                w_end = min(e_t, w_start + token_dur)
+                words.append(TranscriptWord(word=tok, start=round(w_start, 3), end=round(w_end, 3)))
+
+    except Exception as e:
+        logger.warning(f"Error parsing SRT {srt_path}: {e}")
+    return words
+
+def get_clip_words(clip_id: str, passed_words: Optional[List[TranscriptWord]] = None) -> List[TranscriptWord]:
+    """Retrieve transcript words for a clip from cache or disk if not provided."""
+    if passed_words and len(passed_words) > 0:
+        return passed_words
+    if clip_id in clip_words_cache and clip_words_cache[clip_id]:
+        return clip_words_cache[clip_id]
+
+    srt_path = os.path.join(SUBTITLES_DIR, f"{clip_id}.srt")
+    if os.path.exists(srt_path):
+        parsed = parse_srt_to_words(srt_path)
+        if parsed:
+            clip_words_cache[clip_id] = parsed
+            return parsed
+
+    return []
 
 # In-memory job state store
 jobs: Dict[str, JobStatus] = {}
@@ -170,6 +244,10 @@ def run_render_pipeline(
         )
 
         for idx, candidate in enumerate(candidates):
+            # Cache transcript words for re-framing and 4K upscaling
+            if candidate.words:
+                clip_words_cache[candidate.id] = list(candidate.words)
+
             # Mark current clip as actively rendering
             queue_clips[idx].status = "rendering"
             jobs[job_id].clips = list(queue_clips)
@@ -217,6 +295,7 @@ def run_render_pipeline(
             queue_clips[idx].applied_framing = applied_badge
             queue_clips[idx].url = url
             queue_clips[idx].video_id = video_id
+            queue_clips[idx].words = candidate.words or []
 
             # Expose updated progressive list immediately in job state
             jobs[job_id].clips = list(queue_clips)
@@ -374,10 +453,11 @@ async def reframe_clip_endpoint(req: ReframeClipRequest, background_tasks: Backg
             final_clip_filename = f"{req.video_id}_{req.clip_id}.mp4"
             final_clip_path = os.path.join(CLIPS_DIR, final_clip_filename)
 
+            words = get_clip_words(req.clip_id, req.words)
             _, _, _, applied_badge = processor.render_short_clip(
                 source_video_path=raw_path,
                 output_clip_path=final_clip_path,
-                words=req.words or [],
+                words=words,
                 layout=req.layout,
                 caption_style=req.caption_style or "hormozi",
                 clip_id=req.clip_id,
@@ -401,7 +481,8 @@ async def reframe_clip_endpoint(req: ReframeClipRequest, background_tasks: Backg
                 framing_mode=req.layout,
                 applied_framing=applied_badge,
                 url=req.url,
-                video_id=req.video_id
+                video_id=req.video_id,
+                words=words
             )
 
             reframe_tasks[task_id]["status"] = "completed"
@@ -446,34 +527,30 @@ async def upscale_4k_endpoint(req: Upscale4KRequest, background_tasks: Backgroun
 
             applied_badge = "💎 4K UHD (2160x3840)"
 
-            if os.path.exists(raw_path):
-                logger.info(f"Native 4K rendering from raw source for clip {req.clip_id}...")
-                _, thumb_path, srt_path, framing_badge = processor.render_short_clip(
-                    source_video_path=raw_path,
-                    output_clip_path=out_4k_path,
-                    words=[],
-                    layout=req.layout or "auto",
-                    caption_style=req.caption_style or "hormozi",
-                    clip_id=req.clip_id,
-                    start_time_offset=req.start_time,
-                    force_4k=True
-                )
-                applied_badge = f"{framing_badge} • 4K UHD"
-            elif os.path.exists(existing_clip_path):
-                logger.info(f"Direct 4K Lanczos upscaling from rendered clip for {req.clip_id}...")
+            # 1. Primary Strategy: Direct 4K Lanczos upscale from the rendered clip
+            # The rendered clip ALREADY contains the burned-in animated karaoke captions and framing.
+            # Upscaling this clip directly guarantees 100% of captions, styling, and sync are preserved in 4K!
+            if os.path.exists(existing_clip_path):
+                logger.info(f"Direct 4K Lanczos upscaling from rendered clip {existing_clip_path} (preserving all captions & framing)...")
                 processor.upscale_to_4k(existing_clip_path, out_4k_path)
-            elif req.url:
-                logger.info(f"Downloading raw segment to render 4K for {req.clip_id}...")
-                raw_path = download_video_segment(
-                    url=req.url,
-                    output_path=raw_path,
-                    start_time=req.start_time,
-                    end_time=req.end_time
-                )
+                applied_badge = "💎 4K UHD (2160x3840)"
+
+            # 2. Fallback Strategy: If rendered clip is missing, render from raw with captions
+            elif os.path.exists(raw_path) or req.url:
+                if not os.path.exists(raw_path):
+                    logger.info(f"Downloading raw segment to render 4K for {req.clip_id}...")
+                    raw_path = download_video_segment(
+                        url=req.url,
+                        output_path=raw_path,
+                        start_time=req.start_time,
+                        end_time=req.end_time
+                    )
+                logger.info(f"Rendering 4K with captions for clip {req.clip_id}...")
+                words = get_clip_words(req.clip_id, req.words)
                 _, thumb_path, srt_path, framing_badge = processor.render_short_clip(
                     source_video_path=raw_path,
                     output_clip_path=out_4k_path,
-                    words=[],
+                    words=words,
                     layout=req.layout or "auto",
                     caption_style=req.caption_style or "hormozi",
                     clip_id=req.clip_id,
@@ -485,6 +562,7 @@ async def upscale_4k_endpoint(req: Upscale4KRequest, background_tasks: Backgroun
                 raise RuntimeError("No source video or existing clip found to upscale to 4K.")
 
             duration = max(1.0, req.end_time - req.start_time)
+            words = get_clip_words(req.clip_id, req.words)
             updated_clip = ClipResponse(
                 id=req.clip_id,
                 title=req.title or "4K Short",
@@ -504,7 +582,8 @@ async def upscale_4k_endpoint(req: Upscale4KRequest, background_tasks: Backgroun
                 url=req.url,
                 video_id=req.video_id,
                 is_4k=True,
-                resolution="4K UHD (2160x3840)"
+                resolution="4K UHD (2160x3840)",
+                words=words
             )
 
             upscale_tasks[task_id]["status"] = "completed"

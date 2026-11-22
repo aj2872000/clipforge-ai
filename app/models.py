@@ -75,6 +75,7 @@ class Upscale4KRequest(BaseModel):
     start_time: float
     end_time: float
     title: Optional[str] = "4K Short"
+    words: Optional[List[TranscriptWord]] = []
     layout: Optional[str] = "auto"
     caption_style: Optional[str] = "hormozi"
 
@@ -111,6 +112,7 @@ class ClipResponse(BaseModel):
     video_id: Optional[str] = None
     is_4k: Optional[bool] = False
     resolution: Optional[str] = None
+    words: Optional[List[TranscriptWord]] = []
 
 class JobStatus(BaseModel):
     job_id: str
