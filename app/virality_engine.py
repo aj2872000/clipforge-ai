@@ -303,7 +303,15 @@ Return a JSON array containing exactly {max_clips} objects:
   }}
 ]"""
 
-    models_to_try = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash"]
+    models_to_try = [
+        "gemini-3.8-flash",
+        "gemini-3.8-pro",
+        "gemini-3.5-flash",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-latest"
+    ]
     raw_json_str = None
 
     for model_name in models_to_try:
@@ -320,19 +328,34 @@ Return a JSON array containing exactly {max_clips} objects:
             resp = requests.post(url, json=payload, timeout=25)
             if resp.status_code == 200:
                 data = resp.json()
-                raw_json_str = data['candidates'][0]['content']['parts'][0]['text']
-                logger.info(f"Successfully received Opus Clip curation from Gemini ({model_name})!")
-                break
+                candidates_list = data.get("candidates", [])
+                if candidates_list and "content" in candidates_list[0]:
+                    parts = candidates_list[0]["content"].get("parts", [])
+                    if parts and "text" in parts[0]:
+                        raw_json_str = parts[0]["text"]
+                        logger.info(f"Successfully received Opus Clip curation from Gemini ({model_name})!")
+                        break
             else:
                 logger.warning(f"Gemini model {model_name} returned status {resp.status_code}: {resp.text[:200]}")
+                # Dynamically capture any model recommended in Google's error response
+                recommended_models = re.findall(r'models/(gemini-[\w\.\-]+)', resp.text)
+                for rm in recommended_models:
+                    if rm not in models_to_try and rm != model_name:
+                        logger.info(f"Google API recommended model '{rm}'. Adding to candidate models.")
+                        models_to_try.append(rm)
         except Exception as ex:
             logger.warning(f"Gemini {model_name} request error: {ex}")
 
     if not raw_json_str:
         raise RuntimeError("Could not retrieve AI response from Gemini API models.")
 
-    clean_json = re.sub(r'^```json\s*|\s*```$', '', raw_json_str.strip())
-    clip_items = json.loads(clean_json)
+    # Robust JSON parsing
+    bracket_match = re.search(r'\[\s*\{.*\}\s*\]', raw_json_str, re.DOTALL)
+    if bracket_match:
+        clip_items = json.loads(bracket_match.group(0))
+    else:
+        clean_json = re.sub(r'^```(?:json)?\s*|\s*```$', '', raw_json_str.strip())
+        clip_items = json.loads(clean_json)
 
     candidates: List[ClipCandidate] = []
     for idx, item in enumerate(clip_items):
