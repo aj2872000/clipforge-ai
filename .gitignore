@@ -12,3 +12,4 @@ storage/subtitles/*
 .idea/
 *.log
 .env
+storage/youtube_tokens.json

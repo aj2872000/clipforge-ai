@@ -5,7 +5,7 @@ import logging
 from typing import Dict, Any, List
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Response
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.models import (
@@ -15,7 +15,9 @@ from app.models import (
     ClipCandidate,
     ClipResponse,
     JobStatus,
-    VideoMetadata
+    VideoMetadata,
+    YouTubeUploadRequest,
+    YouTubeUploadStatus
 )
 from app.transcriber import (
     extract_video_id,
@@ -25,6 +27,14 @@ from app.transcriber import (
 )
 from app.virality_engine import detect_clips
 from app.video_processor import VideoProcessor
+from app.youtube_service import (
+    get_oauth_config,
+    get_authorization_url,
+    exchange_code_for_tokens,
+    get_connection_status,
+    disconnect as yt_disconnect,
+    resumable_upload_video
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("shorts_creator")
@@ -70,6 +80,7 @@ processor = VideoProcessor(base_dir=STORAGE_DIR)
 
 # In-memory job state store
 jobs: Dict[str, JobStatus] = {}
+upload_jobs: Dict[str, YouTubeUploadStatus] = {}
 
 def update_job(job_id: str, status: str, progress: int, step: str, message: str, log: str = None):
     if job_id in jobs:
@@ -489,6 +500,222 @@ async def generate_sample_demo(background_tasks: BackgroundTasks):
 
     background_tasks.add_task(create_demo)
     return {"job_id": job_id}
+
+# =========================================================================
+# YouTube Data API v3 OAuth & Video Upload Endpoints
+# =========================================================================
+
+@app.get("/api/youtube/status")
+def get_yt_status():
+    """Return YouTube connection and channel status."""
+    return get_connection_status()
+
+@app.get("/api/youtube/auth-url")
+def get_yt_auth_url():
+    """Generate Google OAuth 2.0 authorization URL for YouTube upload scope."""
+    try:
+        url = get_authorization_url()
+        return {"auth_url": url}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/api/youtube/oauth2callback", response_class=HTMLResponse)
+def yt_oauth2_callback(code: Optional[str] = None, error: Optional[str] = None):
+    """Callback redirect invoked by Google OAuth consent flow."""
+    if error:
+        return HTMLResponse(content=f"""
+        <!DOCTYPE html>
+        <html><head><title>OAuth Cancelled</title></head>
+        <body style="font-family: system-ui, sans-serif; background: #0f172a; color: #f87171; text-align: center; padding: 40px;">
+            <h3>Google OAuth Authorization Cancelled</h3>
+            <p>{error}</p>
+            <script>setTimeout(() => window.close(), 2500);</script>
+        </body></html>
+        """)
+
+    if not code:
+        return HTMLResponse(content="<html><body><p>No authorization code received.</p></body></html>")
+
+    try:
+        token_data = exchange_code_for_tokens(code)
+        channel_name = token_data.get("channel_title", "YouTube Channel")
+        channel_handle = token_data.get("channel_handle", "")
+        return HTMLResponse(content=f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>YouTube Connected</title>
+            <style>
+                body {{
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                    background: #0f172a;
+                    color: #e2e8f0;
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                    justify-content: center;
+                    height: 100vh;
+                    margin: 0;
+                    text-align: center;
+                }}
+                .card {{
+                    background: rgba(30, 41, 59, 0.9);
+                    padding: 32px 40px;
+                    border-radius: 16px;
+                    border: 1px solid rgba(255,255,255,0.1);
+                    box-shadow: 0 20px 40px rgba(0,0,0,0.4);
+                }}
+                h2 {{ margin-top: 0; color: #38bdf8; }}
+                .channel {{ font-size: 20px; font-weight: 700; color: #34d399; margin: 12px 0; }}
+            </style>
+        </head>
+        <body>
+            <div class="card">
+                <h2>🎬 YouTube Account Connected!</h2>
+                <div class="channel">{channel_name} {channel_handle}</div>
+                <p style="color: #94a3b8; font-size: 14px;">Window will close automatically...</p>
+            </div>
+            <script>
+                if (window.opener) {{
+                    window.opener.postMessage({{ type: 'YOUTUBE_CONNECTED', channel: '{channel_name}' }}, '*');
+                    setTimeout(() => window.close(), 1200);
+                }} else {{
+                    setTimeout(() => {{ window.location.href = '/'; }}, 1500);
+                }}
+            </script>
+        </body>
+        </html>
+        """)
+    except Exception as e:
+        logger.error(f"OAuth callback exchange error: {e}", exc_info=True)
+        return HTMLResponse(content=f"""
+        <!DOCTYPE html>
+        <html><body style="font-family: system-ui, sans-serif; background: #0f172a; color: #f87171; text-align: center; padding: 40px;">
+            <h3>Failed to complete YouTube OAuth</h3>
+            <p>{str(e)}</p>
+            <button onclick="window.close()" style="padding: 8px 16px; border-radius: 6px; cursor: pointer;">Close</button>
+        </body></html>
+        """)
+
+@app.post("/api/youtube/disconnect")
+def yt_disconnect_endpoint():
+    """Disconnect stored YouTube account and wipe tokens."""
+    success = yt_disconnect()
+    return {"status": "disconnected" if success else "failed"}
+
+@app.post("/api/youtube/credentials")
+def save_yt_credentials(payload: Dict[str, str]):
+    """Save Google OAuth Client ID and Secret to .env."""
+    client_id = payload.get("client_id", "").strip()
+    client_secret = payload.get("client_secret", "").strip()
+    if not client_id or not client_secret:
+        raise HTTPException(status_code=400, detail="Client ID and Client Secret are both required.")
+
+    os.environ["YOUTUBE_CLIENT_ID"] = client_id
+    os.environ["YOUTUBE_CLIENT_SECRET"] = client_secret
+
+    env_path = os.path.join(BASE_DIR, ".env")
+    lines = []
+    keys_updated = {"YOUTUBE_CLIENT_ID": False, "YOUTUBE_CLIENT_SECRET": False}
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("YOUTUBE_CLIENT_ID="):
+                    lines.append(f"YOUTUBE_CLIENT_ID={client_id}\n")
+                    keys_updated["YOUTUBE_CLIENT_ID"] = True
+                elif line.startswith("YOUTUBE_CLIENT_SECRET="):
+                    lines.append(f"YOUTUBE_CLIENT_SECRET={client_secret}\n")
+                    keys_updated["YOUTUBE_CLIENT_SECRET"] = True
+                else:
+                    lines.append(line)
+    if not keys_updated["YOUTUBE_CLIENT_ID"]:
+        lines.append(f"YOUTUBE_CLIENT_ID={client_id}\n")
+    if not keys_updated["YOUTUBE_CLIENT_SECRET"]:
+        lines.append(f"YOUTUBE_CLIENT_SECRET={client_secret}\n")
+
+    try:
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+        return {"status": "saved", "message": "YouTube OAuth credentials saved to .env"}
+    except Exception as e:
+        return {"status": "memory_only", "message": f"Saved in session: {e}"}
+
+@app.post("/api/youtube/upload")
+def upload_clip_to_youtube(req: YouTubeUploadRequest, background_tasks: BackgroundTasks):
+    """
+    Stream a generated clip directly to YouTube using resumable chunked upload.
+    Runs asynchronously in background thread so the UI remains unblocked.
+    """
+    conn_status = get_connection_status()
+    if not conn_status["connected"]:
+        raise HTTPException(
+            status_code=400,
+            detail="YouTube account is not connected. Please connect your YouTube channel in the header first."
+        )
+
+    # Sanitize and resolve file path
+    filename = os.path.basename(req.filename)
+    clip_path = os.path.join(CLIPS_DIR, filename)
+    if not os.path.exists(clip_path):
+        raise HTTPException(status_code=404, detail=f"Generated clip file '{filename}' was not found on disk.")
+
+    task_id = "yt_" + str(uuid.uuid4())[:8]
+    upload_jobs[task_id] = YouTubeUploadStatus(
+        task_id=task_id,
+        clip_id=req.clip_id,
+        status="queued",
+        progress=0,
+        message="Queued for upload to YouTube..."
+    )
+
+    def run_upload_task():
+        def on_progress(pct: int, uploaded: int, total: int):
+            if task_id in upload_jobs:
+                upload_jobs[task_id].status = "uploading"
+                upload_jobs[task_id].progress = pct
+                upload_jobs[task_id].bytes_uploaded = uploaded
+                upload_jobs[task_id].total_bytes = total
+                uploaded_mb = uploaded / (1024 * 1024)
+                total_mb = total / (1024 * 1024)
+                upload_jobs[task_id].message = f"Streaming to YouTube: {pct}% ({uploaded_mb:.1f}MB / {total_mb:.1f}MB)"
+
+        try:
+            upload_jobs[task_id].status = "uploading"
+            upload_jobs[task_id].message = "Starting resumable upload session on YouTube..."
+
+            res = resumable_upload_video(
+                file_path=clip_path,
+                title=req.title,
+                description=req.description or "",
+                tags=req.tags or [],
+                category_id=req.category_id or "24",
+                privacy_status=req.privacy_status or "private",
+                made_for_kids=bool(req.made_for_kids),
+                progress_callback=on_progress
+            )
+
+            upload_jobs[task_id].status = "completed"
+            upload_jobs[task_id].progress = 100
+            upload_jobs[task_id].video_id = res["video_id"]
+            upload_jobs[task_id].video_url = res["video_url"]
+            upload_jobs[task_id].message = f"✓ Successfully published to YouTube! Video ID: {res['video_id']}"
+        except Exception as ex:
+            logger.error(f"YouTube upload failed for task {task_id}: {ex}", exc_info=True)
+            if task_id in upload_jobs:
+                upload_jobs[task_id].status = "failed"
+                upload_jobs[task_id].error = str(ex)
+                upload_jobs[task_id].message = f"Upload failed: {str(ex)}"
+
+    background_tasks.add_task(run_upload_task)
+    return {"task_id": task_id, "status": "queued"}
+
+@app.get("/api/youtube/upload-status/{task_id}", response_model=YouTubeUploadStatus)
+def get_upload_status(task_id: str, response: Response):
+    """Poll upload progress and video link."""
+    if task_id not in upload_jobs:
+        raise HTTPException(status_code=404, detail="Upload task not found.")
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return upload_jobs[task_id]
 
 # Mount static web UI files
 static_dir = os.path.join(BASE_DIR, "static")

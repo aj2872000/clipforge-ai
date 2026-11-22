@@ -93,3 +93,25 @@ class JobStatus(BaseModel):
     logs: List[str] = []
     clips: List[ClipResponse] = []
     error: Optional[str] = None
+
+class YouTubeUploadRequest(BaseModel):
+    clip_id: str
+    filename: str
+    title: str
+    description: Optional[str] = ""
+    tags: Optional[List[str]] = []
+    category_id: Optional[str] = "24"
+    privacy_status: Optional[str] = "private"
+    made_for_kids: Optional[bool] = False
+
+class YouTubeUploadStatus(BaseModel):
+    task_id: str
+    clip_id: str
+    status: str # "queued", "uploading", "completed", "failed"
+    progress: int = 0 # 0 - 100
+    bytes_uploaded: int = 0
+    total_bytes: int = 0
+    video_id: Optional[str] = None
+    video_url: Optional[str] = None
+    error: Optional[str] = None
+    message: Optional[str] = None

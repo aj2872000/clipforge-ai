@@ -29,6 +29,52 @@ document.addEventListener("DOMContentLoaded", () => {
   let activePollInterval = null;
   let hasScrolledToResults = false;
   const renderedClipIds = new Set();
+  const clipsById = {};
+  let currentYtStatus = { connected: false, has_credentials: false };
+
+  // YouTube UI elements
+  const connectYtBtn = document.getElementById("connectYtBtn");
+  const connectYtBtnText = document.getElementById("connectYtBtnText");
+  const ytConnectedBadge = document.getElementById("ytConnectedBadge");
+  const ytChannelAvatar = document.getElementById("ytChannelAvatar");
+  const ytChannelName = document.getElementById("ytChannelName");
+  const disconnectYtBtn = document.getElementById("disconnectYtBtn");
+
+  // YouTube Upload Modal elements
+  const ytUploadModal = document.getElementById("ytUploadModal");
+  const ytUploadModalClose = document.getElementById("ytUploadModalClose");
+  const ytCancelBtn = document.getElementById("ytCancelBtn");
+  const ytModalChannelAvatar = document.getElementById("ytModalChannelAvatar");
+  const ytModalChannelName = document.getElementById("ytModalChannelName");
+  const ytUploadClipId = document.getElementById("ytUploadClipId");
+  const ytUploadFilename = document.getElementById("ytUploadFilename");
+  const ytUploadTitle = document.getElementById("ytUploadTitle");
+  const ytTitleCount = document.getElementById("ytTitleCount");
+  const ytUploadDesc = document.getElementById("ytUploadDesc");
+  const ytDescCount = document.getElementById("ytDescCount");
+  const ytUploadTags = document.getElementById("ytUploadTags");
+  const ytTagsCount = document.getElementById("ytTagsCount");
+  const ytUploadCategory = document.getElementById("ytUploadCategory");
+  const ytUploadPrivacy = document.getElementById("ytUploadPrivacy");
+  const ytUploadMadeForKids = document.getElementById("ytUploadMadeForKids");
+  const ytUploadProgressBox = document.getElementById("ytUploadProgressBox");
+  const ytProgressFill = document.getElementById("ytProgressFill");
+  const ytProgressStatusText = document.getElementById("ytProgressStatusText");
+  const ytProgressPctText = document.getElementById("ytProgressPctText");
+  const ytProgressDetailText = document.getElementById("ytProgressDetailText");
+  const ytUploadSuccessBox = document.getElementById("ytUploadSuccessBox");
+  const ytSuccessVideoLink = document.getElementById("ytSuccessVideoLink");
+  const ytSubmitUploadBtn = document.getElementById("ytSubmitUploadBtn");
+
+  // YouTube Credentials Modal elements
+  const ytCredentialsModal = document.getElementById("ytCredentialsModal");
+  const ytCredModalClose = document.getElementById("ytCredModalClose");
+  const ytCredCancelBtn = document.getElementById("ytCredCancelBtn");
+  const ytClientIdInput = document.getElementById("ytClientIdInput");
+  const ytClientSecretInput = document.getElementById("ytClientSecretInput");
+  const ytCredSaveBtn = document.getElementById("ytCredSaveBtn");
+
+  let activeUploadPollInterval = null;
 
   const keyStatusBadge = document.getElementById("keyStatusBadge");
   const saveKeyBtn = document.getElementById("saveKeyBtn");
@@ -250,6 +296,10 @@ document.addEventListener("DOMContentLoaded", () => {
   function renderIncrementalResults(clips, isStillProcessing) {
     if (!clips || clips.length === 0) return;
 
+    clips.forEach((c) => {
+      clipsById[c.id] = c;
+    });
+
     resultsSection.style.display = "block";
 
     const completedCount = clips.filter((c) => c.status === "completed").length;
@@ -302,8 +352,11 @@ document.addEventListener("DOMContentLoaded", () => {
       `;
       actionButtons = `
         <a href="${clip.download_url}" download class="btn btn-primary" style="display: inline-flex; align-items: center; justify-content: center; gap: 6px;">
-          <span>⬇ Download (Max Quality)</span>
+          <span>⬇ Download</span>
         </a>
+        <button type="button" class="btn btn-yt-upload" onclick="window.openYouTubeUploadModal('${clip.id}')" title="Publish directly to YouTube Shorts">
+          <span>▶ Upload</span>
+        </button>
         ${clip.subtitles_url ? `
           <a href="${clip.subtitles_url}" download class="btn btn-secondary" title="Download Subtitles">
             📄 SRT
@@ -404,5 +457,324 @@ document.addEventListener("DOMContentLoaded", () => {
   function escapeQuotes(text) {
     if (!text) return "";
     return text.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+  }
+
+  // =========================================================================
+  // YouTube Data API v3 & Upload Management
+  // =========================================================================
+
+  // Check YouTube connection status on load
+  function checkYouTubeStatus() {
+    fetch("/api/youtube/status")
+      .then((r) => r.json())
+      .then((status) => {
+        currentYtStatus = status;
+        if (status.connected) {
+          connectYtBtn.style.display = "none";
+          ytConnectedBadge.style.display = "inline-flex";
+          ytChannelName.innerText = status.channel_title || "Connected Channel";
+          if (status.channel_thumbnail) {
+            ytChannelAvatar.src = status.channel_thumbnail;
+            ytChannelAvatar.style.display = "block";
+          } else {
+            ytChannelAvatar.style.display = "none";
+          }
+        } else {
+          ytConnectedBadge.style.display = "none";
+          connectYtBtn.style.display = "inline-flex";
+          connectYtBtnText.innerText = status.has_credentials ? "Connect YouTube" : "Setup YouTube";
+        }
+      })
+      .catch((err) => console.error("YouTube status check error:", err));
+  }
+  checkYouTubeStatus();
+
+  // Listen for message from OAuth popup callback
+  window.addEventListener("message", (event) => {
+    if (event.data && event.data.type === "YOUTUBE_CONNECTED") {
+      checkYouTubeStatus();
+    }
+  });
+
+  // Connect YouTube Account button click
+  if (connectYtBtn) {
+    connectYtBtn.addEventListener("click", async () => {
+      if (!currentYtStatus.has_credentials) {
+        // Open credentials setup modal
+        ytCredentialsModal.classList.add("active");
+        return;
+      }
+      try {
+        connectYtBtn.disabled = true;
+        connectYtBtnText.innerText = "Connecting...";
+        const res = await fetch("/api/youtube/auth-url");
+        if (!res.ok) {
+          const errData = await res.json();
+          throw new Error(errData.detail || "Failed to get auth URL");
+        }
+        const data = await res.json();
+        // Open OAuth consent window in popup
+        const width = 600, height = 720;
+        const left = (window.innerWidth - width) / 2;
+        const top = (window.innerHeight - height) / 2;
+        window.open(data.auth_url, "yt_oauth", `width=${width},height=${height},top=${top},left=${left}`);
+      } catch (err) {
+        alert("YouTube Auth Error: " + err.message);
+        ytCredentialsModal.classList.add("active");
+      } finally {
+        connectYtBtn.disabled = false;
+        connectYtBtnText.innerText = "Connect YouTube";
+      }
+    });
+  }
+
+  // Disconnect YouTube Account button click
+  if (disconnectYtBtn) {
+    disconnectYtBtn.addEventListener("click", async () => {
+      if (!confirm("Are you sure you want to disconnect this YouTube channel?")) return;
+      try {
+        await fetch("/api/youtube/disconnect", { method: "POST" });
+        checkYouTubeStatus();
+      } catch (err) {
+        alert("Disconnect failed: " + err.message);
+      }
+    });
+  }
+
+  // Save OAuth credentials modal button click
+  if (ytCredSaveBtn) {
+    ytCredSaveBtn.addEventListener("click", async () => {
+      const clientId = ytClientIdInput.value.trim();
+      const clientSecret = ytClientSecretInput.value.trim();
+      if (!clientId || !clientSecret) {
+        alert("Please enter both OAuth Client ID and Client Secret.");
+        return;
+      }
+
+      try {
+        ytCredSaveBtn.disabled = true;
+        ytCredSaveBtn.innerText = "Saving...";
+        const res = await fetch("/api/youtube/credentials", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ client_id: clientId, client_secret: clientSecret })
+        });
+        if (!res.ok) {
+          const errData = await res.json();
+          throw new Error(errData.detail || "Failed to save credentials");
+        }
+        ytCredentialsModal.classList.remove("active");
+        currentYtStatus.has_credentials = true;
+        // Trigger auth flow immediately
+        connectYtBtn.click();
+      } catch (err) {
+        alert("Error saving credentials: " + err.message);
+      } finally {
+        ytCredSaveBtn.disabled = false;
+        ytCredSaveBtn.innerText = "💾 Save & Authorize";
+      }
+    });
+  }
+
+  if (ytCredModalClose) ytCredModalClose.addEventListener("click", () => ytCredentialsModal.classList.remove("active"));
+  if (ytCredCancelBtn) ytCredCancelBtn.addEventListener("click", () => ytCredentialsModal.classList.remove("active"));
+  if (ytUploadModalClose) ytUploadModalClose.addEventListener("click", () => closeUploadModal());
+  if (ytCancelBtn) ytCancelBtn.addEventListener("click", () => closeUploadModal());
+
+  function closeUploadModal() {
+    ytUploadModal.classList.remove("active");
+    if (activeUploadPollInterval) {
+      clearInterval(activeUploadPollInterval);
+      activeUploadPollInterval = null;
+    }
+  }
+
+  // Character counters for upload form
+  if (ytUploadTitle) {
+    ytUploadTitle.addEventListener("input", () => {
+      ytTitleCount.innerText = `${ytUploadTitle.value.length}/100`;
+    });
+  }
+  if (ytUploadDesc) {
+    ytUploadDesc.addEventListener("input", () => {
+      ytDescCount.innerText = `${ytUploadDesc.value.length}/5000`;
+    });
+  }
+  if (ytUploadTags) {
+    ytUploadTags.addEventListener("input", () => {
+      ytTagsCount.innerText = `${ytUploadTags.value.length}/500`;
+    });
+  }
+
+  // Open YouTube Upload Modal for a specific clip
+  window.openYouTubeUploadModal = function(clipId) {
+    const clip = clipsById[clipId];
+    if (!clip) {
+      alert("Clip metadata not found.");
+      return;
+    }
+
+    if (!currentYtStatus.connected) {
+      if (confirm("You need to connect your YouTube Channel before uploading. Connect now?")) {
+        connectYtBtn.click();
+      }
+      return;
+    }
+
+    // Populate channel destination
+    if (currentYtStatus.channel_thumbnail) {
+      ytModalChannelAvatar.src = currentYtStatus.channel_thumbnail;
+      ytModalChannelAvatar.style.display = "block";
+    } else {
+      ytModalChannelAvatar.style.display = "none";
+    }
+    ytModalChannelName.innerText = `${currentYtStatus.channel_title} (${currentYtStatus.channel_handle || 'Channel'})`;
+
+    // Extract filename from video_url
+    const rawFilename = (clip.video_url || "").replace("/api/stream/", "").trim();
+    ytUploadClipId.value = clip.id;
+    ytUploadFilename.value = rawFilename;
+
+    // Pre-populate Title: ensure #Shorts is present and under 100 chars
+    let title = (clip.title || "").trim();
+    if (!title.toLowerCase().includes("#shorts") && title.length + 8 <= 100) {
+      title += " #Shorts";
+    }
+    ytUploadTitle.value = title.slice(0, 100);
+    ytTitleCount.innerText = `${ytUploadTitle.value.length}/100`;
+
+    // Pre-populate Description
+    let descParts = [];
+    if (clip.hook) descParts.push(clip.hook);
+    if (clip.explanation) descParts.push(clip.explanation);
+    descParts.push("Created automatically with ClipForge AI (Opus Clip Engine).");
+    if (clip.hashtags && clip.hashtags.length > 0) {
+      const tagsStr = clip.hashtags.map(t => t.startsWith("#") ? t : "#" + t).join(" ");
+      descParts.push(tagsStr);
+    }
+    ytUploadDesc.value = descParts.join("\n\n").slice(0, 5000);
+    ytDescCount.innerText = `${ytUploadDesc.value.length}/5000`;
+
+    // Pre-populate Tags (without #)
+    const cleanTags = (clip.hashtags || []).map(t => t.replace(/^#/, "").trim()).filter(Boolean);
+    ytUploadTags.value = cleanTags.join(", ").slice(0, 500);
+    ytTagsCount.innerText = `${ytUploadTags.value.length}/500`;
+
+    // Reset Category, Privacy, Kids toggle
+    ytUploadCategory.value = "24"; // Entertainment
+    ytUploadPrivacy.value = "private";
+    ytUploadMadeForKids.checked = false;
+
+    // Reset upload status boxes
+    ytUploadProgressBox.style.display = "none";
+    ytUploadSuccessBox.style.display = "none";
+    ytSubmitUploadBtn.disabled = false;
+    ytSubmitUploadBtn.innerHTML = `<span>🚀 Publish to YouTube</span>`;
+
+    // Show modal
+    ytUploadModal.classList.add("active");
+  };
+
+  // Submit YouTube Upload Handler
+  if (ytSubmitUploadBtn) {
+    ytSubmitUploadBtn.addEventListener("click", async () => {
+      const title = ytUploadTitle.value.trim();
+      if (!title) {
+        alert("Please enter a title for the video.");
+        ytUploadTitle.focus();
+        return;
+      }
+
+      const filename = ytUploadFilename.value.trim();
+      if (!filename) {
+        alert("Invalid clip video file reference.");
+        return;
+      }
+
+      const tagsList = ytUploadTags.value
+        .split(",")
+        .map(t => t.trim())
+        .filter(Boolean);
+
+      const payload = {
+        clip_id: ytUploadClipId.value,
+        filename: filename,
+        title: title,
+        description: ytUploadDesc.value.trim(),
+        tags: tagsList,
+        category_id: ytUploadCategory.value,
+        privacy_status: ytUploadPrivacy.value,
+        made_for_kids: ytUploadMadeForKids.checked
+      };
+
+      try {
+        ytSubmitUploadBtn.disabled = true;
+        ytSubmitUploadBtn.innerHTML = `<span class="spinner"></span> Uploading...`;
+        ytUploadProgressBox.style.display = "flex";
+        ytUploadSuccessBox.style.display = "none";
+        ytProgressFill.style.width = "5%";
+        ytProgressPctText.innerText = "5%";
+        ytProgressStatusText.innerText = "Initializing upload...";
+        ytProgressDetailText.innerText = "Creating resumable upload session on YouTube...";
+
+        const res = await fetch("/api/youtube/upload", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+
+        if (!res.ok) {
+          const errData = await res.json();
+          throw new Error(errData.detail || "Failed to start upload");
+        }
+
+        const data = await res.json();
+        pollUploadStatus(data.task_id);
+      } catch (err) {
+        alert("Upload Failed: " + err.message);
+        ytSubmitUploadBtn.disabled = false;
+        ytSubmitUploadBtn.innerHTML = `<span>🚀 Publish to YouTube</span>`;
+        ytUploadProgressBox.style.display = "none";
+      }
+    });
+  }
+
+  // Poll Resumable Upload Status
+  function pollUploadStatus(taskId) {
+    if (activeUploadPollInterval) clearInterval(activeUploadPollInterval);
+
+    activeUploadPollInterval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/youtube/upload-status/${taskId}?_t=${Date.now()}`, {
+          cache: "no-store"
+        });
+        if (!res.ok) return;
+
+        const data = await res.json();
+        ytProgressFill.style.width = `${data.progress}%`;
+        ytProgressPctText.innerText = `${data.progress}%`;
+        ytProgressDetailText.innerText = data.message || "Streaming video chunks...";
+
+        if (data.status === "completed") {
+          clearInterval(activeUploadPollInterval);
+          activeUploadPollInterval = null;
+          ytUploadProgressBox.style.display = "none";
+          ytUploadSuccessBox.style.display = "flex";
+          ytSuccessVideoLink.href = data.video_url;
+          ytSuccessVideoLink.innerHTML = `<span>${data.video_url}</span> <span>↗</span>`;
+          ytSubmitUploadBtn.disabled = false;
+          ytSubmitUploadBtn.innerHTML = `<span>✓ Published</span>`;
+        } else if (data.status === "failed") {
+          clearInterval(activeUploadPollInterval);
+          activeUploadPollInterval = null;
+          ytUploadProgressBox.style.display = "none";
+          ytSubmitUploadBtn.disabled = false;
+          ytSubmitUploadBtn.innerHTML = `<span>🚀 Retry Upload</span>`;
+          alert("YouTube Upload Failed: " + (data.error || "Unknown error occurred."));
+        }
+      } catch (err) {
+        console.error("Upload status poll error:", err);
+      }
+    }, 800);
   }
 });
