@@ -237,7 +237,7 @@ document.addEventListener("DOMContentLoaded", () => {
             🔥 ${clip.virality_score}/100 Virality
           </div>
           <div style="position: absolute; top: 12px; left: 12px; background: rgba(15, 23, 42, 0.85); border-radius: 6px; padding: 4px 8px; font-size: 11px; font-weight: 700; color: #a5b4fc; border: 1px solid rgba(165, 180, 252, 0.35); backdrop-filter: blur(4px);">
-            💎 Ultra-HD (2K/4K)
+            💎 Max Quality (Min 1080p)
           </div>
           <div class="duration-badge">${Math.round(clip.duration)}s</div>
           <video 
@@ -271,7 +271,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
           <div class="clip-actions">
             <a href="${clip.download_url}" download class="btn btn-primary" style="display: inline-flex; align-items: center; justify-content: center; gap: 6px;">
-              <span>⬇ Download Ultra-HD</span>
+              <span>⬇ Download (Max Quality)</span>
             </a>
             ${clip.subtitles_url ? `
               <a href="${clip.subtitles_url}" download class="btn btn-secondary" title="Download Subtitles">

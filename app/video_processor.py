@@ -86,27 +86,38 @@ class VideoProcessor:
         srt_path = os.path.join(self.subtitles_dir, f"{clip_id}.srt")
         thumb_path = os.path.splitext(output_clip_path)[0] + ".jpg"
 
-        # Probe source video dimensions to match highest available resolution
+        # Probe source video dimensions and frame rate to match highest available resolution
         src_w, src_h = 1920, 1080
+        src_fps = 30.0
         try:
             import cv2
             cap = cv2.VideoCapture(source_video_path)
             if cap.isOpened():
                 src_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 1920
                 src_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 1080
+                src_fps = float(cap.get(cv2.CAP_PROP_FPS)) or 30.0
                 cap.release()
         except Exception:
             pass
 
-        # Target resolution higher than 1080p:
-        # If source is 4K (height >= 2160 or width >= 3840): output 2160x3840 (4K UHD 9:16)
-        # Otherwise: output 1440x2560 (2K QHD 9:16)
+        # Target 9:16 vertical resolution matching source with strict minimum of 1080p:
+        # - 4K UHD: if source >= 2160p (or >= 3840w) -> 2160x3840
+        # - 1440p QHD: if source >= 1440p (or >= 2560w) -> 1440x2560
+        # - 1080p FHD: if source is 1080p or lower -> 1080x1920 (enforcing strict minimum of 1080p)
         if src_h >= 2160 or src_w >= 3840:
             target_w, target_h = 2160, 3840
-            logger.info(f"Source video is 4K ({src_w}x{src_h}). Rendering 4K Ultra-HD vertical short (2160x3840).")
-        else:
+            res_label = "4K UHD (2160x3840)"
+        elif src_h >= 1440 or src_w >= 2560:
             target_w, target_h = 1440, 2560
-            logger.info(f"Source video is {src_w}x{src_h}. Rendering 2K QHD vertical short (1440x2560).")
+            res_label = "1440p QHD (1440x2560)"
+        else:
+            target_w, target_h = 1080, 1920
+            res_label = "1080p FHD (1080x1920)"
+
+        logger.info(
+            f"Source video: {src_w}x{src_h} @ {src_fps:.2f}fps. "
+            f"Rendering at maximum quality {res_label} preserving {src_fps:.2f}fps with near-lossless CRF 15."
+        )
 
         # Generate subtitles scaled proportionally to target resolution
         if words:
@@ -127,7 +138,7 @@ class VideoProcessor:
 
         # High-Fidelity Upscaling & Sharpening filter strings
         sharpen_filter = "cas=0.55" if self.has_cas else "unsharp=5:5:0.6:5:5:0.2"
-        fg_sharpen = "cas=0.45" if self.has_cas else "unsharp=5:5:0.5:5:5:0.2"
+        fg_sharpen = "cas=0.35" if self.has_cas else "unsharp=5:5:0.4:5:5:0.2"
 
         # Build filter complex according to layout
         filter_complex = ""
@@ -158,23 +169,36 @@ class VideoProcessor:
                 filter_complex = f"{v_chain};[cropped]null[outv]"
 
         else: # Default: blur_fill (High-Speed Downscale-Blur-Upscale Algorithm in Ultra-HD)
-            bg_scale_w = int(target_w / 4)
-            bg_scale_h = int(target_h / 4)
-            v_chain = (
-                "[0:v]split=2[bg_in][fg_in];"
-                f"[bg_in]scale={bg_scale_w}:{bg_scale_h}:force_original_aspect_ratio=increase,"
-                f"crop={bg_scale_w}:{bg_scale_h},boxblur=5:1,"
-                f"scale={target_w}:{target_h}:flags=bilinear,"
-                "eq=brightness=-0.08:contrast=1.05[bg];"
-                f"[fg_in]scale={target_w}:-1:flags=lanczos+accurate_rnd+full_chroma_int,{fg_sharpen},eq=contrast=1.03:saturation=1.04[fg];"
-                "[bg][fg]overlay=(W-w)/2:(H-h)/2[merged]"
-            )
-            if has_subtitles:
-                filter_complex = f"{v_chain};[merged]ass='{escaped_ass}'[outv]"
+            # Check if video is already vertical (e.g. 9:16)
+            is_already_vertical = abs((src_w / max(1, src_h)) - (9.0 / 16.0)) < 0.05
+            if is_already_vertical:
+                v_chain = f"[0:v]scale={target_w}:{target_h}:flags=lanczos+accurate_rnd+full_chroma_int[vert_scaled]"
+                if has_subtitles:
+                    filter_complex = f"{v_chain};[vert_scaled]ass='{escaped_ass}'[outv]"
+                else:
+                    filter_complex = f"{v_chain};[vert_scaled]null[outv]"
             else:
-                filter_complex = f"{v_chain};[merged]null[outv]"
+                bg_scale_w = int(target_w / 4)
+                bg_scale_h = int(target_h / 4)
+                v_chain = (
+                    "[0:v]split=2[bg_in][fg_in];"
+                    f"[bg_in]scale={bg_scale_w}:{bg_scale_h}:force_original_aspect_ratio=increase,"
+                    f"crop={bg_scale_w}:{bg_scale_h},boxblur=5:1,"
+                    f"scale={target_w}:{target_h}:flags=bilinear,"
+                    "eq=brightness=-0.08:contrast=1.05[bg];"
+                    f"[fg_in]scale={target_w}:-1:flags=lanczos+accurate_rnd+full_chroma_int[fg];"
+                    "[bg][fg]overlay=(W-w)/2:(H-h)/2:format=auto[merged]"
+                )
+                if has_subtitles:
+                    filter_complex = f"{v_chain};[merged]ass='{escaped_ass}'[outv]"
+                else:
+                    filter_complex = f"{v_chain};[merged]null[outv]"
 
-        # Execute FFmpeg rendering with near-lossless CRF 16, 320k audio, and 'veryfast' preset
+        # Execute FFmpeg rendering:
+        # - Strictly preserves original frame rate (-r {src_fps})
+        # - Near-lossless mastering quality (-crf 15)
+        # - High-bitrate headroom (-maxrate 60M -bufsize 120M)
+        # - Studio-grade audio (-b:a 320k)
         cmd = [
             "ffmpeg", "-y",
             "-threads", "0",
@@ -182,9 +206,12 @@ class VideoProcessor:
             "-filter_complex", filter_complex,
             "-map", "[outv]",
             "-map", "0:a?",
+            "-r", f"{src_fps:.3f}",
             "-c:v", "libx264",
-            "-preset", "veryfast",
-            "-crf", "16",
+            "-preset", "fast",
+            "-crf", "15",
+            "-maxrate", "60M",
+            "-bufsize", "120M",
             "-pix_fmt", "yuv420p",
             "-c:a", "aac",
             "-b:a", "320k",

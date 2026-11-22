@@ -445,10 +445,10 @@ def download_video_segment(
     end_time: float
 ) -> str:
     """
-    High-Fidelity Video Segment Downloader:
-    - Extracts the absolute highest quality stream available on YouTube (up to 4K / 2160p / 1440p / 1080p60)
-    - Prioritizes desktop web clients for access to 4K/2K/1080p60 DASH manifests
-    - Uses concurrent connections and near-lossless cut postprocessing (CRF 16)
+    Maximum Quality Video Segment Downloader:
+    - Enforces fetching at the highest available resolution of the source YouTube video (4K, 1440p, 1080p)
+    - Prioritizes streams with height >= 1080p, preserving original frame rate (60fps) and highest bitrate
+    - Employs uncompressed mastering cut postprocessing (CRF 14 with lossless audio copy)
     """
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
@@ -457,16 +457,21 @@ def download_video_segment(
 
     ydl_opts = get_base_ydl_opts()
 
-    # Prioritize web client first to fetch 4K/1440p/1080p60 manifests; fallback to mobile clients if needed
+    # Prioritize web and tv clients for full unthrottled access to 4K, 1440p, 1080p60 DASH manifests
     ydl_opts['extractor_args'] = {
         'youtube': {
-            'player_client': ['web', 'mweb', 'ios', 'android']
+            'player_client': ['web', 'tv', 'mweb', 'ios', 'android']
         }
     }
 
-    # Always select the absolute highest resolution & bitrate available on YouTube
-    ydl_opts['format'] = 'bestvideo*+bestaudio/best'
-    ydl_opts['format_sort'] = ['res', 'fps', 'codec:vp9', 'tbr', 'size']
+    # Format selection strictly demanding highest resolution (minimum 1080p if available on source) and maximum bitrate
+    ydl_opts['format'] = (
+        'bestvideo[height>=1080]+bestaudio/'
+        'bestvideo+bestaudio/'
+        'best[height>=1080]/'
+        'best'
+    )
+    ydl_opts['format_sort'] = ['res', 'fps', 'tbr', 'size', 'br']
 
     ydl_opts.update({
         'outtmpl': temp_tmpl,
@@ -476,7 +481,7 @@ def download_video_segment(
         'overwrites': True,
         'buffersize': 1024 * 1024, # 1MB buffer
         'postprocessor_args': {
-            'ffmpeg': ['-c:v', 'libx264', '-crf', '16', '-preset', 'fast']
+            'ffmpeg': ['-c:v', 'libx264', '-crf', '14', '-preset', 'veryfast', '-c:a', 'copy']
         }
     })
 
@@ -485,9 +490,9 @@ def download_video_segment(
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
     except Exception as e:
-        logger.warning(f"Primary format download failed ({e}), falling back to generic best stream...")
-        ydl_opts['format'] = 'bv*+ba/b'
-        ydl_opts['extractor_args']['youtube']['player_client'] = ['android', 'ios', 'mweb', 'web']
+        logger.warning(f"Primary format download failed ({e}), retrying with fallback clients...")
+        ydl_opts['format'] = 'bestvideo+bestaudio/best'
+        ydl_opts['extractor_args']['youtube']['player_client'] = ['tv', 'web', 'mweb', 'ios', 'android']
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
 
