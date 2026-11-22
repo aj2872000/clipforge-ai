@@ -77,11 +77,12 @@ class ClipResponse(BaseModel):
     duration: float
     start_time: float
     end_time: float
-    video_url: str
-    download_url: str
+    video_url: Optional[str] = ""
+    download_url: Optional[str] = ""
     thumbnail_url: Optional[str] = None
     subtitles_url: Optional[str] = None
     hashtags: List[str] = []
+    status: Optional[str] = "completed" # "queued", "rendering", "completed", "failed"
 
 class JobStatus(BaseModel):
     job_id: str

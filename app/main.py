@@ -117,19 +117,50 @@ async def run_render_pipeline(
     caption_style: str
 ):
     try:
-        update_job(job_id, "downloading", 15, "Download", f"Downloading {len(candidates)} clips at max YouTube resolution...", "Starting segment downloads via yt-dlp...")
-
-        rendered_clips: List[ClipResponse] = []
         total_clips = len(candidates)
 
+        # Initialize the progressive processing queue with all candidate clips
+        queue_clips: List[ClipResponse] = []
         for idx, candidate in enumerate(candidates):
-            step_pct = 20 + int((idx / total_clips) * 70)
+            queue_clips.append(ClipResponse(
+                id=candidate.id,
+                title=candidate.title,
+                virality_score=candidate.virality_score,
+                hook=candidate.hook,
+                explanation=candidate.explanation,
+                duration=candidate.duration,
+                start_time=candidate.start_time,
+                end_time=candidate.end_time,
+                video_url="",
+                download_url="",
+                thumbnail_url=None,
+                subtitles_url=None,
+                hashtags=candidate.hashtags or ["#shorts", "#viral"],
+                status="queued"
+            ))
+
+        jobs[job_id].clips = list(queue_clips)
+        update_job(
+            job_id,
+            "rendering",
+            20,
+            "Queue Initialized",
+            f"Queued {total_clips} viral shorts. Processing clips progressively...",
+            f"Progressive queue started with {total_clips} clips."
+        )
+
+        for idx, candidate in enumerate(candidates):
+            # Mark current clip as actively rendering
+            queue_clips[idx].status = "rendering"
+            jobs[job_id].clips = list(queue_clips)
+
+            step_pct = 20 + int((idx / total_clips) * 75)
             update_job(
                 job_id,
                 "rendering",
                 step_pct,
                 f"Rendering Clip {idx+1}/{total_clips}",
-                f"Generating '{candidate.title}' in Ultra-HD (9:16 {layout})...",
+                f"Generating '{candidate.title}' (Max Quality, min 1080p)...",
                 f"Processing clip {idx+1}/{total_clips}: {candidate.start_time:.1f}s - {candidate.end_time:.1f}s"
             )
 
@@ -163,36 +194,27 @@ async def run_render_pipeline(
                 except Exception:
                     pass
 
-            clip_item = ClipResponse(
-                id=candidate.id,
-                title=candidate.title,
-                virality_score=candidate.virality_score,
-                hook=candidate.hook,
-                explanation=candidate.explanation,
-                duration=candidate.duration,
-                start_time=candidate.start_time,
-                end_time=candidate.end_time,
-                video_url=f"/api/stream/{final_clip_filename}",
-                download_url=f"/api/download/{final_clip_filename}",
-                thumbnail_url=f"/api/stream/{os.path.splitext(final_clip_filename)[0]}.jpg",
-                subtitles_url=f"/api/subtitle/{candidate.id}.srt",
-                hashtags=candidate.hashtags or ["#shorts", "#viral"]
-            )
-            rendered_clips.append(clip_item)
+            # 3. Immediately mark THIS clip as completed and expose download & stream URLs!
+            queue_clips[idx].status = "completed"
+            queue_clips[idx].video_url = f"/api/stream/{final_clip_filename}"
+            queue_clips[idx].download_url = f"/api/download/{final_clip_filename}"
+            queue_clips[idx].thumbnail_url = f"/api/stream/{os.path.splitext(final_clip_filename)[0]}.jpg"
+            queue_clips[idx].subtitles_url = f"/api/subtitle/{candidate.id}.srt"
 
-            # Make this clip available for immediate download in real-time
-            jobs[job_id].clips = list(rendered_clips)
+            # Expose updated progressive list immediately in job state
+            jobs[job_id].clips = list(queue_clips)
+            ready_count = idx + 1
             update_job(
                 job_id,
                 "rendering",
-                20 + int(((idx + 1) / total_clips) * 75),
-                f"Short #{idx+1} Ready",
-                f"Short #{idx+1} is ready for download! Rendering next clip...",
-                f"✓ Short #{idx+1} ('{candidate.title}') rendered in Ultra-HD and ready for download."
+                20 + int((ready_count / total_clips) * 75),
+                f"Short #{ready_count} Ready for Download",
+                f"Short #{ready_count} is ready to download! Remaining clips processing in background...",
+                f"✓ Short #{ready_count} ('{candidate.title}') rendered & download enabled."
             )
 
-        jobs[job_id].clips = rendered_clips
-        update_job(job_id, "completed", 100, "Finished", f"Successfully created {len(rendered_clips)} viral shorts in Ultra-HD!", "All clips rendered and ready for download.")
+        jobs[job_id].clips = list(queue_clips)
+        update_job(job_id, "completed", 100, "Finished", f"Successfully created all {total_clips} viral shorts!", "All clips rendered and ready for download.")
     except Exception as e:
         logger.error(f"Render pipeline failed for job {job_id}: {e}", exc_info=True)
         jobs[job_id].error = str(e)

@@ -180,75 +180,114 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function renderIncrementalResults(clips, isStillProcessing) {
+    if (!clips || clips.length === 0) return;
+
     resultsSection.style.display = "block";
 
-    // Detect new clips that haven't been rendered yet
-    const newClips = clips.filter((c) => !renderedClipIds.has(c.id));
+    const completedCount = clips.filter((c) => c.status === "completed").length;
+    clipsCountSpan.innerText = isStillProcessing
+      ? `(${completedCount}/${clips.length} ready — processing batch...)`
+      : `(${completedCount})`;
 
     // First time showing results: scroll down gently
-    if (renderedClipIds.size === 0 && clips.length > 0) {
+    if (clipsGrid.children.length === 0) {
       resultsSection.scrollIntoView({ behavior: "smooth" });
     }
 
-    if (newClips.length > 0) {
-      // Remove any existing placeholder card before appending new clips
-      const placeholder = document.getElementById("renderingPlaceholderCard");
-      if (placeholder) placeholder.remove();
-
-      newClips.forEach((clip) => {
-        renderedClipIds.add(clip.id);
-        const cardHtml = createClipCard(clip);
-        clipsGrid.insertAdjacentHTML("beforeend", cardHtml);
-      });
-    }
-
-    // If more clips are being rendered, show an active processing indicator card at the end
-    if (isStillProcessing) {
-      clipsCountSpan.innerText = `(${clips.length} ready — rendering next...)`;
-      if (!document.getElementById("renderingPlaceholderCard")) {
-        const placeholderHtml = `
-          <div class="clip-card" id="renderingPlaceholderCard" style="border: 2px dashed rgba(99, 102, 241, 0.45); background: rgba(30, 41, 59, 0.4); display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 420px; text-align: center; padding: 24px; border-radius: 16px;">
-            <div class="spinner" style="width: 44px; height: 44px; border-width: 4px; border-top-color: #6366f1; margin-bottom: 16px;"></div>
-            <h4 style="color: #e0e7ff; margin-bottom: 8px; font-size: 16px; font-weight: 600;">Rendering Next Short...</h4>
-            <p style="color: var(--text-muted); font-size: 13px; max-width: 220px; line-height: 1.5;">
-              Your completed shorts above are ready to watch and download right now!
-            </p>
-          </div>
-        `;
-        clipsGrid.insertAdjacentHTML("beforeend", placeholderHtml);
+    clips.forEach((clip) => {
+      const existingCard = document.getElementById(`clip-card-${clip.id}`);
+      if (!existingCard) {
+        // Card doesn't exist yet: create and append it to queue grid
+        clipsGrid.insertAdjacentHTML("beforeend", createClipCard(clip));
+      } else if (existingCard.dataset.status !== clip.status) {
+        // Status changed (e.g. queued -> rendering -> completed): update card and unlock download button
+        existingCard.outerHTML = createClipCard(clip);
       }
-    } else {
-      clipsCountSpan.innerText = `(${clips.length})`;
-      const placeholder = document.getElementById("renderingPlaceholderCard");
-      if (placeholder) placeholder.remove();
-    }
+    });
   }
 
   function createClipCard(clip) {
+    const isCompleted = clip.status === "completed" && clip.download_url;
+    const isRendering = clip.status === "rendering";
     const scoreColor = clip.virality_score >= 90 ? "#fbbf24" : "#34d399";
     const hashtagsHtml = (clip.hashtags || [])
       .map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`)
       .join("");
 
+    let videoContent = "";
+    let statusBadge = "";
+    let actionButtons = "";
+
+    if (isCompleted) {
+      statusBadge = `<span class="status-pill ready">✓ Ready to Download</span>`;
+      videoContent = `
+        <video 
+          class="video-player" 
+          controls 
+          preload="metadata"
+          poster="${clip.thumbnail_url || ''}"
+        >
+          <source src="${clip.video_url}" type="video/mp4">
+          Your browser does not support the video tag.
+        </video>
+      `;
+      actionButtons = `
+        <a href="${clip.download_url}" download class="btn btn-primary" style="display: inline-flex; align-items: center; justify-content: center; gap: 6px;">
+          <span>⬇ Download (Max Quality)</span>
+        </a>
+        ${clip.subtitles_url ? `
+          <a href="${clip.subtitles_url}" download class="btn btn-secondary" title="Download Subtitles">
+            📄 SRT
+          </a>
+        ` : ""}
+      `;
+    } else if (isRendering) {
+      statusBadge = `<span class="status-pill rendering"><span class="spinner" style="width:10px;height:10px;border-width:1.5px;"></span> Rendering</span>`;
+      videoContent = `
+        <div class="video-placeholder">
+          <div class="spinner" style="width: 42px; height: 42px; border-width: 3.5px; border-top-color: #6366f1; margin-bottom: 14px;"></div>
+          <div style="font-weight: 700; color: #e0e7ff; font-size: 15px; margin-bottom: 6px;">Rendering in Background...</div>
+          <div style="font-size: 12px; color: #94a3b8; max-width: 220px; line-height: 1.4;">
+            Generating 9:16 framing & subtitles. Download button will unlock immediately!
+          </div>
+        </div>
+      `;
+      actionButtons = `
+        <button class="btn btn-disabled" disabled style="display: inline-flex; align-items: center; justify-content: center; gap: 8px;">
+          <span class="spinner" style="width: 14px; height: 14px; border-width: 2px;"></span>
+          <span>Rendering Clip...</span>
+        </button>
+      `;
+    } else {
+      // Queued in batch
+      statusBadge = `<span class="status-pill queued">⏳ Queued</span>`;
+      videoContent = `
+        <div class="video-placeholder">
+          <div style="font-size: 34px; opacity: 0.6; margin-bottom: 8px;">⏳</div>
+          <div style="font-weight: 600; color: #cbd5e1; font-size: 14px; margin-bottom: 4px;">Queued in Batch</div>
+          <div style="font-size: 12px; color: #64748b; max-width: 200px; line-height: 1.4;">
+            Will begin processing as soon as earlier clips finish.
+          </div>
+        </div>
+      `;
+      actionButtons = `
+        <button class="btn btn-disabled" disabled style="display: inline-flex; align-items: center; justify-content: center; gap: 6px;">
+          <span>⏳ Queued</span>
+        </button>
+      `;
+    }
+
     return `
-      <div class="clip-card" id="clip-card-${clip.id}">
+      <div class="clip-card" id="clip-card-${clip.id}" data-status="${clip.status || 'queued'}">
         <div class="video-container">
           <div class="virality-badge" style="border-color: ${scoreColor}; color: ${scoreColor};">
             🔥 ${clip.virality_score}/100 Virality
           </div>
-          <div style="position: absolute; top: 12px; left: 12px; background: rgba(15, 23, 42, 0.85); border-radius: 6px; padding: 4px 8px; font-size: 11px; font-weight: 700; color: #a5b4fc; border: 1px solid rgba(165, 180, 252, 0.35); backdrop-filter: blur(4px);">
-            💎 Max Quality (Min 1080p)
+          <div style="position: absolute; top: 12px; left: 12px; z-index: 10;">
+            ${statusBadge}
           </div>
           <div class="duration-badge">${Math.round(clip.duration)}s</div>
-          <video 
-            class="video-player" 
-            controls 
-            preload="metadata"
-            poster="${clip.thumbnail_url || ''}"
-          >
-            <source src="${clip.video_url}" type="video/mp4">
-            Your browser does not support the video tag.
-          </video>
+          ${videoContent}
         </div>
         <div class="clip-body">
           <div class="clip-title-row">
@@ -269,15 +308,8 @@ document.addEventListener("DOMContentLoaded", () => {
             ${hashtagsHtml}
           </div>
 
-          <div class="clip-actions">
-            <a href="${clip.download_url}" download class="btn btn-primary" style="display: inline-flex; align-items: center; justify-content: center; gap: 6px;">
-              <span>⬇ Download (Max Quality)</span>
-            </a>
-            ${clip.subtitles_url ? `
-              <a href="${clip.subtitles_url}" download class="btn btn-secondary" title="Download Subtitles">
-                📄 SRT
-              </a>
-            ` : ""}
+          <div class="clip-actions" id="clip-actions-${clip.id}">
+            ${actionButtons}
           </div>
         </div>
       </div>
